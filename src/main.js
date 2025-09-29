@@ -142,11 +142,27 @@ const parseJsonLdJob = ($) => {
     return out;
 };
 
+// Clean description HTML: keep only text content tags
+const sanitizeDescriptionHtml = ($container) => {
+    if (!$container || !$container.length) return '';
+    // Clone to avoid mutating the original DOM
+    const clone = $container.clone();
+    // Remove scripts, styles, navs, buttons, svgs, etc.
+    clone.find('script, style, nav, header, footer, button, svg, img, form, aside').remove();
+    // Strip attributes from all elements
+    clone.find('*').each((_, el) => {
+        const attribs = Object.keys(el.attribs || {});
+        for (const a of attribs) {
+            delete el.attribs[a];
+        }
+    });
+    // Keep only relevant container tags
+    return clone.html() || '';
+};
+
 const htmlToText = (html) => (html || '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|h\d)>/gi, '\n')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<[^>]+>/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -240,8 +256,11 @@ const crawler = new CheerioCrawler({
             const bullets = headerBlock.find('li').map((_, li) => $(li).text().trim()).get().filter(Boolean);
             let salary = jsonld.salary || bullets.find(t => /£|salary/i.test(t)) || '';
             let locationText = cleanLocation(jsonld.location || bullets.find(t => /,|shire|london|manchester|remote|county/i.test(t)) || '');
-            let description_html = $('main,article,section').first().html() || '';
+
+            // Job description container
+            let description_html = sanitizeDescriptionHtml($('div.job-description, .description, [data-qa="job-description"]').first());
             const description_text = jsonld.description_text || htmlToText(description_html);
+
             const item = {
                 url: request.url,
                 title: title || null,
