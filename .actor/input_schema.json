@@ -1,0 +1,85 @@
+{
+  "title": "Reed Jobs Scraper",
+  "description": "Scrape jobs from Reed.co.uk listings. Provide a keyword and/or location, or a full Reed search URL. The actor paginates results and (optionally) opens job detail pages.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "keyword": {
+      "title": "Keyword",
+      "type": "string",
+      "description": "Job search keyword(s). Example: Software Developer",
+      "editor": "textfield",
+      "sectionCaption": "Required"
+    },
+
+    "location": {
+      "title": "Location",
+      "type": "string",
+      "description": "Job location. Example: London",
+      "editor": "textfield",
+      "sectionCaption": "Optional"
+    },
+
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Optional Reed search or listing URL. Example: https://www.reed.co.uk/jobs/software-developer-jobs-in-london",
+      "editor": "textfield",
+      "sectionCaption": "Advanced"
+    },
+
+    "results_wanted": {
+      "title": "Max jobs",
+      "type": "integer",
+      "description": "Maximum number of jobs to collect. Leave empty to collect all available.",
+      "minimum": 1,
+      "prefill": 100,
+      "editor": "number"
+    },
+
+    "max_pages": {
+      "title": "Max pages",
+      "type": "integer",
+      "description": "Safety cap on how many listing pages to visit. Leave empty for no cap (the actor still stops at Max jobs).",
+      "minimum": 1,
+      "editor": "number"
+    },
+
+    "posted_date": {
+      "title": "Posted date filter",
+      "type": "string",
+      "description": "Optional recency filter (not all values may map directly). Example: today, 3days, 7days, anytime",
+      "editor": "textfield"
+    },
+
+    "collectDetails": {
+      "title": "Collect job details",
+      "type": "boolean",
+      "description": "If enabled, the scraper also opens each job detail page to capture full description/salary (slower, but richer data).",
+      "editor": "checkbox"
+    },
+
+    "cookies": {
+      "title": "Custom cookies (raw header)",
+      "type": "string",
+      "description": "Optional raw Cookie header string (e.g., \"consent=true; session=xyz; abc=123\"). Helps bypass consent or guest banners.",
+      "editor": "textfield"
+    },
+
+    "cookiesJson": {
+      "title": "Custom cookies (JSON)",
+      "type": "string",
+      "description": "Optional JSON for cookies. Accepts an array (e.g., [\"consent=true\", {\"name\":\"session\",\"value\":\"xyz\"}]) or an object map (e.g., {\"consent\":\"true\",\"session\":\"xyz\"}).",
+      "editor": "textarea"
+    },
+
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy (recommended). Consider Residential if you encounter blocks.",
+      "editor": "proxy"
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
