@@ -320,11 +320,18 @@ const crawler = new CheerioCrawler({
             // --- Robust job description extraction ---
             const container = findBestDescriptionContainer($);
             let description_html = sanitizeHtmlString(container?.html?.() || '');
-            // If still empty, try a broader fallback on the whole page (rare)
+
+            // Fallback if empty
             if (!description_html) {
                 const broad = $('article, main').first().html() || $('body').html() || '';
                 description_html = sanitizeHtmlString(broad);
             }
+
+            // Remove company-profile / apply anchors injected near header
+            description_html = description_html.replace(
+                /<a[^>]+href="[^"]*(company-profile|\/apply|#apply)[^"]*"[^>]*>.*?<\/a>/gi,
+                ''
+            );
 
             const description_text = jsonld.description_text || htmlToText(description_html);
 
