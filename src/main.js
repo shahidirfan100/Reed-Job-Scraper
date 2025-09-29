@@ -42,11 +42,10 @@ const slugify = (s) => (s ?? '')
 
 const cleanLocation = (loc) => {
     if (!loc) return null;
-    return loc.replace(/,\s*[A-Z]{2}$/, '').trim(); // drop ", GB" etc
+    return loc.replace(/,\s*[A-Z]{2}$/, '').trim();
 };
 
 const buildStartUrl = (kw, loc, date) => {
-    // Default jobs page with date filter
     if (!kw && !loc) {
         const url = new URL('https://www.reed.co.uk/jobs');
         if (date && date !== 'anytime') {
@@ -143,7 +142,6 @@ const parseJsonLdJob = ($) => {
     return out;
 };
 
-// Find the best container that actually holds the job description text
 const findBestDescriptionContainer = ($) => {
     const orderedSelectors = [
         '*[itemprop="description"]',
@@ -157,7 +155,6 @@ const findBestDescriptionContainer = ($) => {
         const el = $(sel).first();
         if (el && el.length && el.text().trim().length > 120) return el;
     }
-    // Fallback: the biggest relevant text block inside main/article
     const scope = $('main, article, [role="main"], .content').first().length
         ? $('main, article, [role="main"], .content').first()
         : $('body');
@@ -173,7 +170,6 @@ const findBestDescriptionContainer = ($) => {
         const len = txt.length;
         if (len < 200) return;
         if (badRx.test(txt)) return;
-        // Prefer blocks with lists / headings (typical for responsibilities)
         const bonus = ($el.find('li').length ? 150 : 0) + ($el.find('h1,h2,h3').length ? 50 : 0);
         const score = len + bonus;
         if (score > bestScore) {
@@ -185,36 +181,22 @@ const findBestDescriptionContainer = ($) => {
     return best || scope;
 };
 
-// Light HTML sanitizer that keeps only content-related tags and (for <a>) preserves href
+// Sanitize job description HTML: remove ALL hyperlinks and unwanted tags
 const sanitizeHtmlString = (rawHtml) => {
     if (!rawHtml) return '';
-
-    // Remove whole unwanted elements first
     let html = rawHtml
         .replace(/<\s*(script|style|nav|header|footer|button|svg|img|form|aside)[\s\S]*?<\/\s*\1\s*>/gi, '');
 
-    // Normalize anchor tags to only keep href (make it absolute later)
-    html = html.replace(/<a\b([^>]*?)>/gi, (m, attrs) => {
-        const hrefMatch = attrs.match(/\bhref\s*=\s*("([^"]+)"|'([^']+)'|([^'">\s]+))/i);
-        const href = hrefMatch ? (hrefMatch[2] || hrefMatch[3] || hrefMatch[4] || '') : '';
-        const abs = toAbs(href) || '#';
-        return `<a href="${abs}">`;
-    });
+    // Remove ALL hyperlinks completely (anchor + inner text)
+    html = html.replace(/<a[^>]*>.*?<\/a>/gi, '');
 
-    // Strip attributes from allowed tags (except <a> handled above)
+    // Strip attributes from allowed tags
     html = html.replace(/<\s*(p|ul|ol|li|strong|em|h1|h2|h3)\b[^>]*>/gi, '<$1>');
 
-    // Unwrap any disallowed tags but keep their inner HTML
-    html = html.replace(/<\/?(?!p|br|ul|ol|li|strong|em|h1|h2|h3|a)\w+[^>]*>/gi, '');
+    // Unwrap disallowed tags
+    html = html.replace(/<\/?(?!p|br|ul|ol|li|strong|em|h1|h2|h3)\w+[^>]*>/gi, '');
 
-    // Collapse excessive empty tags / whitespace
-    html = html
-        .replace(/\s*\n\s*/g, '\n')
-        .replace(/(\n\s*){3,}/g, '\n\n')
-        .replace(/<p>\s*<\/p>/gi, '')
-        .trim();
-
-    return html;
+    return html.trim();
 };
 
 const htmlToText = (html) => (html || '')
@@ -279,7 +261,6 @@ const crawler = new CheerioCrawler({
     async requestHandler({ request, $, log: crawlerLog, enqueueLinks }) {
         const { label, pageNo = 1 } = request.userData ?? {};
 
-        // LIST pages
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($);
             crawlerLog.info(`LIST: ${request.url} -> ${links.length} jobs.`);
@@ -305,7 +286,6 @@ const crawler = new CheerioCrawler({
             return;
         }
 
-        // DETAIL pages
         if (label === 'DETAIL') {
             if (jobCount >= RESULTS_WANTED) return;
             const jsonld = parseJsonLdJob($);
@@ -317,21 +297,12 @@ const crawler = new CheerioCrawler({
             let salary = jsonld.salary || bullets.find(t => /£|salary/i.test(t)) || '';
             let locationText = cleanLocation(jsonld.location || bullets.find(t => /,|shire|london|manchester|remote|county/i.test(t)) || '');
 
-            // --- Robust job description extraction ---
             const container = findBestDescriptionContainer($);
             let description_html = sanitizeHtmlString(container?.html?.() || '');
-
-            // Fallback if empty
             if (!description_html) {
                 const broad = $('article, main').first().html() || $('body').html() || '';
                 description_html = sanitizeHtmlString(broad);
             }
-
-            // Remove company-profile / apply anchors injected near header
-            description_html = description_html.replace(
-                /<a[^>]+href="[^"]*(company-profile|\/apply|#apply)[^"]*"[^>]*>.*?<\/a>/gi,
-                ''
-            );
 
             const description_text = jsonld.description_text || htmlToText(description_html);
 
