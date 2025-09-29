@@ -42,7 +42,7 @@ const slugify = (s) => (s ?? '')
 
 const cleanLocation = (loc) => {
     if (!loc) return null;
-    return loc.replace(/,\s*[A-Z]{2}$/, '').trim();
+    return loc.replace(/,\s*[A-Z]{2}$/, '').trim(); // drop ", GB" etc
 };
 
 const buildStartUrl = (kw, loc, date) => {
@@ -50,7 +50,8 @@ const buildStartUrl = (kw, loc, date) => {
     if (!kw && !loc) {
         const url = new URL('https://www.reed.co.uk/jobs');
         if (date && date !== 'anytime') {
-            if (date === 'last3days') url.searchParams.set('dateCreatedOffSet', 'lastthree');
+            if (date === 'today') url.searchParams.set('dateCreatedOffSet', 'today');
+            else if (date === 'last3days') url.searchParams.set('dateCreatedOffSet', 'lastthree');
             else if (date === 'last7days') url.searchParams.set('dateCreatedOffSet', 'lastseven');
             else if (date === 'last14days') url.searchParams.set('dateCreatedOffSet', 'lastfourteen');
             else url.searchParams.set('dateCreatedOffSet', date);
@@ -142,28 +143,78 @@ const parseJsonLdJob = ($) => {
     return out;
 };
 
-// Sanitize description HTML
-const sanitizeDescriptionHtml = ($container) => {
-    if (!$container || !$container.length) return '';
-    const clone = $container.clone();
+// Find the best container that actually holds the job description text
+const findBestDescriptionContainer = ($) => {
+    const orderedSelectors = [
+        '*[itemprop="description"]',
+        '.job-description',
+        '[data-qa="job-description"]',
+        '.job-description__body',
+        '.job__description',
+        '.description',
+    ];
+    for (const sel of orderedSelectors) {
+        const el = $(sel).first();
+        if (el && el.length && el.text().trim().length > 120) return el;
+    }
+    // Fallback: the biggest relevant text block inside main/article
+    const scope = $('main, article, [role="main"], .content').first().length
+        ? $('main, article, [role="main"], .content').first()
+        : $('body');
 
-    // Remove unwanted nodes
-    clone.find('script, style, nav, header, footer, button, svg, img, form, aside').remove();
+    let best = null;
+    let bestScore = 0;
 
-    // Process each node
-    clone.find('*').each((_, el) => {
-        const allowedTags = ['p','br','ul','ol','li','strong','em','h1','h2','h3','a'];
-        if (!allowedTags.includes(el.name)) {
-            const $el = clone.find(el);
-            $el.replaceWith($el.html() || '');
-        } else {
-            for (const a of Object.keys(el.attribs || {})) {
-                delete el.attribs[a];
-            }
+    const badRx = /Similar Jobs|Recommended courses|Create alerts|Frequently Asked Questions|Apply on the go|Browse jobs|Filters/i;
+
+    scope.find('section, div').each((_, el) => {
+        const $el = $(el);
+        const txt = $el.text().trim();
+        const len = txt.length;
+        if (len < 200) return;
+        if (badRx.test(txt)) return;
+        // Prefer blocks with lists / headings (typical for responsibilities)
+        const bonus = ($el.find('li').length ? 150 : 0) + ($el.find('h1,h2,h3').length ? 50 : 0);
+        const score = len + bonus;
+        if (score > bestScore) {
+            bestScore = score;
+            best = $el;
         }
     });
 
-    return clone.html() || '';
+    return best || scope;
+};
+
+// Light HTML sanitizer that keeps only content-related tags and (for <a>) preserves href
+const sanitizeHtmlString = (rawHtml) => {
+    if (!rawHtml) return '';
+
+    // Remove whole unwanted elements first
+    let html = rawHtml
+        .replace(/<\s*(script|style|nav|header|footer|button|svg|img|form|aside)[\s\S]*?<\/\s*\1\s*>/gi, '');
+
+    // Normalize anchor tags to only keep href (make it absolute later)
+    html = html.replace(/<a\b([^>]*?)>/gi, (m, attrs) => {
+        const hrefMatch = attrs.match(/\bhref\s*=\s*("([^"]+)"|'([^']+)'|([^'">\s]+))/i);
+        const href = hrefMatch ? (hrefMatch[2] || hrefMatch[3] || hrefMatch[4] || '') : '';
+        const abs = toAbs(href) || '#';
+        return `<a href="${abs}">`;
+    });
+
+    // Strip attributes from allowed tags (except <a> handled above)
+    html = html.replace(/<\s*(p|ul|ol|li|strong|em|h1|h2|h3)\b[^>]*>/gi, '<$1>');
+
+    // Unwrap any disallowed tags but keep their inner HTML
+    html = html.replace(/<\/?(?!p|br|ul|ol|li|strong|em|h1|h2|h3|a)\w+[^>]*>/gi, '');
+
+    // Collapse excessive empty tags / whitespace
+    html = html
+        .replace(/\s*\n\s*/g, '\n')
+        .replace(/(\n\s*){3,}/g, '\n\n')
+        .replace(/<p>\s*<\/p>/gi, '')
+        .trim();
+
+    return html;
 };
 
 const htmlToText = (html) => (html || '')
@@ -260,25 +311,21 @@ const crawler = new CheerioCrawler({
             const jsonld = parseJsonLdJob($);
             const title = jsonld.title || $('h1').first().text().trim();
             let company = jsonld.hiringOrganization || $('h1').nextAll('a').first().text().trim();
+
             const headerBlock = $('h1').closest('div,section,article');
             const bullets = headerBlock.find('li').map((_, li) => $(li).text().trim()).get().filter(Boolean);
             let salary = jsonld.salary || bullets.find(t => /£|salary/i.test(t)) || '';
             let locationText = cleanLocation(jsonld.location || bullets.find(t => /,|shire|london|manchester|remote|county/i.test(t)) || '');
 
-            // Flexible job description selection
-            let descriptionContainer =
-                $('*[itemprop="description"]').first() ||
-                $('.job-description').first() ||
-                $('[data-qa="job-description"]').first() ||
-                $('.description').first();
-
-            if (!descriptionContainer || !descriptionContainer.length) {
-                descriptionContainer = $('article, main').filter((_, el) => {
-                    return $(el).text().trim().length > 200;
-                }).first();
+            // --- Robust job description extraction ---
+            const container = findBestDescriptionContainer($);
+            let description_html = sanitizeHtmlString(container?.html?.() || '');
+            // If still empty, try a broader fallback on the whole page (rare)
+            if (!description_html) {
+                const broad = $('article, main').first().html() || $('body').html() || '';
+                description_html = sanitizeHtmlString(broad);
             }
 
-            let description_html = sanitizeDescriptionHtml(descriptionContainer);
             const description_text = jsonld.description_text || htmlToText(description_html);
 
             const item = {
