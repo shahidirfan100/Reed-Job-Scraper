@@ -142,21 +142,27 @@ const parseJsonLdJob = ($) => {
     return out;
 };
 
-// Clean description HTML: keep only text content tags
+// Sanitize description HTML
 const sanitizeDescriptionHtml = ($container) => {
     if (!$container || !$container.length) return '';
-    // Clone to avoid mutating the original DOM
     const clone = $container.clone();
-    // Remove scripts, styles, navs, buttons, svgs, etc.
+
+    // Remove unwanted nodes
     clone.find('script, style, nav, header, footer, button, svg, img, form, aside').remove();
-    // Strip attributes from all elements
+
+    // Process each node
     clone.find('*').each((_, el) => {
-        const attribs = Object.keys(el.attribs || {});
-        for (const a of attribs) {
-            delete el.attribs[a];
+        const allowedTags = ['p','br','ul','ol','li','strong','em','h1','h2','h3','a'];
+        if (!allowedTags.includes(el.name)) {
+            const $el = clone.find(el);
+            $el.replaceWith($el.html() || '');
+        } else {
+            for (const a of Object.keys(el.attribs || {})) {
+                delete el.attribs[a];
+            }
         }
     });
-    // Keep only relevant container tags
+
     return clone.html() || '';
 };
 
@@ -222,6 +228,7 @@ const crawler = new CheerioCrawler({
     async requestHandler({ request, $, log: crawlerLog, enqueueLinks }) {
         const { label, pageNo = 1 } = request.userData ?? {};
 
+        // LIST pages
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($);
             crawlerLog.info(`LIST: ${request.url} -> ${links.length} jobs.`);
@@ -247,6 +254,7 @@ const crawler = new CheerioCrawler({
             return;
         }
 
+        // DETAIL pages
         if (label === 'DETAIL') {
             if (jobCount >= RESULTS_WANTED) return;
             const jsonld = parseJsonLdJob($);
@@ -257,8 +265,20 @@ const crawler = new CheerioCrawler({
             let salary = jsonld.salary || bullets.find(t => /£|salary/i.test(t)) || '';
             let locationText = cleanLocation(jsonld.location || bullets.find(t => /,|shire|london|manchester|remote|county/i.test(t)) || '');
 
-            // Job description container
-            let description_html = sanitizeDescriptionHtml($('div.job-description, .description, [data-qa="job-description"]').first());
+            // Flexible job description selection
+            let descriptionContainer =
+                $('*[itemprop="description"]').first() ||
+                $('.job-description').first() ||
+                $('[data-qa="job-description"]').first() ||
+                $('.description').first();
+
+            if (!descriptionContainer || !descriptionContainer.length) {
+                descriptionContainer = $('article, main').filter((_, el) => {
+                    return $(el).text().trim().length > 200;
+                }).first();
+            }
+
+            let description_html = sanitizeDescriptionHtml(descriptionContainer);
             const description_text = jsonld.description_text || htmlToText(description_html);
 
             const item = {
