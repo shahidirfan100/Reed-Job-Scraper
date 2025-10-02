@@ -16,12 +16,6 @@
       "description": "Job search keyword(s), e.g., 'Software Developer'.",
       "editor": "textfield"
     },
-    "collectDetails": {
-      "title": "Collect job details",
-      "type": "boolean",
-      "description": "If enabled, scraper opens job detail pages for full description/salary.",
-      "editor": "checkbox"
-    },
     "location": {
       "title": "Location (if not using Start URL)",
       "type": "string",
@@ -41,6 +35,12 @@
       ],
       "prefill": "anytime",
       "editor": "select"
+    },
+    "collectDetails": {
+      "title": "Collect job details",
+      "type": "boolean",
+      "description": "If enabled, scraper opens job detail pages for full description/salary.",
+      "editor": "checkbox"
     },
     "results_wanted": {
       "title": "Maximum number of jobs",
