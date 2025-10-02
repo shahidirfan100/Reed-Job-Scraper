@@ -4,56 +4,17 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "keyword": {
-      "title": "Keyword",
-      "type": "string",
-      "description": "Job search keyword(s). Example: Software Developer",
-      "editor": "textfield",
-      "sectionCaption": "Optional"
-    },
-    "location": {
-      "title": "Location",
-      "type": "string",
-      "description": "Job location. Example: London",
-      "editor": "textfield",
-      "sectionCaption": "Optional"
-    },
-    "posted_date": {
-      "title": "Posted date filter",
-      "type": "string",
-      "description": "Recency filter supported by Reed.co.uk",
-      "enum": [
-        "today",
-        "last3days",
-        "last7days",
-        "last14days",
-        "anytime"
-      ],
-      "prefill": "anytime",
-      "editor": "select",
-      "sectionCaption": "Optional"
-    },
     "startUrl": {
       "title": "Start URL",
       "type": "string",
-      "description": "Optional Reed search URL. Example: https://www.reed.co.uk/jobs?dateCreatedOffSet=today",
-      "editor": "textfield",
-      "sectionCaption": "Advanced"
+      "description": "Start scraping from a specific Reed.co.uk search URL. If provided, this will be used instead of Keyword/Location.",
+      "editor": "textfield"
     },
-    "results_wanted": {
-      "title": "Max jobs",
-      "type": "integer",
-      "description": "Maximum number of jobs to collect. Leave empty to collect all.",
-      "minimum": 1,
-      "prefill": 100,
-      "editor": "number"
-    },
-    "max_pages": {
-      "title": "Max pages",
-      "type": "integer",
-      "description": "Safety cap on listing pages to visit.",
-      "minimum": 1,
-      "editor": "number"
+    "keyword": {
+      "title": "Keyword (if not using Start URL)",
+      "type": "string",
+      "description": "Job search keyword(s), e.g., 'Software Developer'.",
+      "editor": "textfield"
     },
     "collectDetails": {
       "title": "Collect job details",
@@ -61,23 +22,58 @@
       "description": "If enabled, scraper opens job detail pages for full description/salary.",
       "editor": "checkbox"
     },
+    "location": {
+      "title": "Location (if not using Start URL)",
+      "type": "string",
+      "description": "Geographic location to search in, e.g., 'London'.",
+      "editor": "textfield"
+    },
+    "posted_date": {
+      "title": "Posted Date (if not using Start URL)",
+      "type": "string",
+      "description": "Filter jobs by how recently they were posted.",
+      "enum": [
+        "anytime",
+        "today",
+        "last3days",
+        "last7days",
+        "last14days"
+      ],
+      "prefill": "anytime",
+      "editor": "select"
+    },
+    "results_wanted": {
+      "title": "Maximum number of jobs",
+      "type": "integer",
+      "description": "The maximum number of jobs to collect. Leave empty to collect all available jobs.",
+      "minimum": 1,
+      "prefill": 100,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "A safety cap on the number of search result pages to visit.",
+      "minimum": 1,
+      "editor": "number"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy for the best results.",
+      "editor": "proxy"
+    },
     "cookies": {
       "title": "Custom cookies (raw header)",
       "type": "string",
-      "description": "Optional raw Cookie header string. Helps bypass consent/guest banners.",
+      "description": "Optional raw 'Cookie' header string. Can help bypass consent banners.",
       "editor": "textfield"
     },
     "cookiesJson": {
       "title": "Custom cookies (JSON)",
       "type": "string",
-      "description": "Optional JSON cookies. Accepts array (e.g., [\"a=1\", {\"name\":\"b\",\"value\":\"2\"}]) or object map (e.g., {\"a\":\"1\",\"b\":\"2\"}).",
+      "description": "Optional JSON-formatted cookies. Accepts an array (e.g., [{\"name\":\"a\",\"value\":\"1\"}]) or an object map (e.g., {\"a\":\"1\"}).",
       "editor": "textarea"
-    },
-    "proxyConfiguration": {
-      "title": "Proxy configuration",
-      "type": "object",
-      "description": "Use Apify Proxy (recommended).",
-      "editor": "proxy"
     }
   },
   "required": [],
