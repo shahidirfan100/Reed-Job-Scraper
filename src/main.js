@@ -242,8 +242,9 @@ const proxyConf = proxyConfiguration
     : undefined;
 
 // ------------------------- SHARED STATE -------------------------
-let jobCount = 0;
-let shouldStop = false;
+let jobsScraped = 0; // Actual jobs pushed to dataset
+let jobsEnqueued = 0; // Jobs enqueued for detail scraping
+let shouldStopEnqueuing = false; // Stop enqueueing new jobs
 const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 
 // ------------------------- CRAWLER -------------------------
@@ -256,20 +257,14 @@ const crawler = new CheerioCrawler({
     useSessionPool: true,
     persistCookiesPerSession: true,
     sessionPoolOptions: {
-        maxPoolSize: 50, // More sessions for better anti-blocking
+        maxPoolSize: 50,
         sessionOptions: {
-            maxUsageCount: 30, // Rotate sessions more frequently
+            maxUsageCount: 30,
             maxErrorScore: 3,
         },
     },
     preNavigationHooks: [
-        async ({ request, session }) => {
-            // Early exit if we've reached the limit
-            if (shouldStop) {
-                request.skipNavigation = true;
-                return;
-            }
-            
+        async ({ request }) => {
             // Anti-blocking headers
             request.headers = {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -292,23 +287,17 @@ const crawler = new CheerioCrawler({
     ],
     
     async requestHandler({ request, $, log: crawlerLog, enqueueLinks, crawler }) {
-        // Skip processing if we've reached the limit
-        if (shouldStop) {
-            crawlerLog.info(`Limit reached (${RESULTS_WANTED}). Skipping request: ${request.url}`);
-            return;
-        }
-
         const { label, pageNo = 1 } = request.userData ?? {};
 
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($);
-            crawlerLog.info(`LIST: ${request.url} -> ${links.length} jobs found. Current count: ${jobCount}/${RESULTS_WANTED}`);
+            crawlerLog.info(`LIST page ${pageNo}: Found ${links.length} jobs | Scraped: ${jobsScraped}/${RESULTS_WANTED} | Enqueued: ${jobsEnqueued}`);
 
             if (!collectDetails) {
                 // Direct push mode - stop as soon as we reach the limit
                 for (const link of links) {
-                    if (jobCount >= RESULTS_WANTED) {
-                        shouldStop = true;
+                    if (jobsScraped >= RESULTS_WANTED) {
+                        shouldStopEnqueuing = true;
                         break;
                     }
                     await Dataset.pushData({ 
@@ -317,29 +306,36 @@ const crawler = new CheerioCrawler({
                         _fetchedAt: new Date().toISOString(), 
                         _from: 'list' 
                     });
-                    jobCount++;
+                    jobsScraped++;
+                    crawlerLog.info(`✓ Job ${jobsScraped}/${RESULTS_WANTED} saved (list mode)`);
                 }
             } else {
                 // Detail mode - only enqueue what we need
-                const remaining = RESULTS_WANTED - jobCount;
-                const linksToEnqueue = links.slice(0, remaining);
-                
-                if (linksToEnqueue.length > 0) {
-                    await enqueueLinks({ 
-                        urls: linksToEnqueue, 
-                        userData: { label: 'DETAIL' } 
-                    });
-                    crawlerLog.info(`Enqueued ${linksToEnqueue.length} detail pages. Remaining: ${remaining}`);
+                if (!shouldStopEnqueuing) {
+                    const remaining = RESULTS_WANTED - jobsEnqueued;
+                    const linksToEnqueue = links.slice(0, Math.max(0, remaining));
+                    
+                    if (linksToEnqueue.length > 0) {
+                        await enqueueLinks({ 
+                            urls: linksToEnqueue, 
+                            userData: { label: 'DETAIL' } 
+                        });
+                        jobsEnqueued += linksToEnqueue.length;
+                        crawlerLog.info(`→ Enqueued ${linksToEnqueue.length} detail pages | Total enqueued: ${jobsEnqueued}/${RESULTS_WANTED}`);
+                    }
+                    
+                    // Stop enqueueing if we've reached the limit
+                    if (jobsEnqueued >= RESULTS_WANTED) {
+                        shouldStopEnqueuing = true;
+                        crawlerLog.info(`✓ Reached target: ${jobsEnqueued} jobs enqueued. Stopping pagination.`);
+                        return;
+                    }
                 }
-                
-                // Update job count optimistically (we've queued these jobs)
-                jobCount += linksToEnqueue.length;
             }
 
-            // Check if we should stop
-            if (jobCount >= RESULTS_WANTED) {
-                shouldStop = true;
-                crawlerLog.info(`✓ Target reached: ${jobCount}/${RESULTS_WANTED} jobs. Stopping crawler.`);
+            // Check if we should stop pagination
+            if (shouldStopEnqueuing || jobsScraped >= RESULTS_WANTED) {
+                crawlerLog.info(`Stopping pagination. Scraped: ${jobsScraped}, Enqueued: ${jobsEnqueued}`);
                 return;
             }
 
@@ -356,14 +352,17 @@ const crawler = new CheerioCrawler({
                     urls: [nextUrl], 
                     userData: { label: 'LIST', pageNo: pageNo + 1 } 
                 });
+                crawlerLog.info(`→ Next page enqueued: ${pageNo + 1}`);
+            } else {
+                crawlerLog.info(`No next page found. End of results.`);
             }
             return;
         }
 
         if (label === 'DETAIL') {
-            // Double-check limit before processing detail
-            if (shouldStop || jobCount > RESULTS_WANTED) {
-                crawlerLog.info(`Skipping detail page - limit reached: ${request.url}`);
+            // Check if we should skip (in case we got more enqueued than needed)
+            if (jobsScraped >= RESULTS_WANTED) {
+                crawlerLog.info(`Skipping detail - already at limit: ${request.url}`);
                 return;
             }
 
@@ -403,7 +402,8 @@ const crawler = new CheerioCrawler({
             };
             
             await Dataset.pushData(item);
-            crawlerLog.info(`✓ Scraped job ${jobCount}/${RESULTS_WANTED}: ${title}`);
+            jobsScraped++;
+            crawlerLog.info(`✓ Job ${jobsScraped}/${RESULTS_WANTED} saved: ${title || 'Untitled'}`);
         }
     },
     
@@ -414,6 +414,6 @@ const crawler = new CheerioCrawler({
 });
 
 await crawler.run(initialUrls.map(u => ({ url: u, userData: { label: 'LIST', pageNo: 1 } })));
-log.info(`✓ Scraping completed. Total jobs scraped: ${jobCount}/${RESULTS_WANTED}`);
+log.info(`✓ Scraping completed. Total jobs scraped: ${jobsScraped}/${RESULTS_WANTED} | Jobs enqueued: ${jobsEnqueued}`);
 
 await Actor.exit();
