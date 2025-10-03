@@ -40,14 +40,15 @@
       "title": "Collect job details",
       "type": "boolean",
       "description": "If enabled, scraper opens job detail pages for full description/salary.",
-      "editor": "checkbox"
+      "editor": "checkbox",
+      "default": true
     },
     "results_wanted": {
       "title": "Maximum number of jobs",
       "type": "integer",
       "description": "The maximum number of jobs to collect. Leave empty to collect all available jobs.",
       "minimum": 1,
-      "prefill": 100,
+      "default": 100,
       "editor": "number"
     },
     "max_pages": {
@@ -55,7 +56,8 @@
       "type": "integer",
       "description": "A safety cap on the number of search result pages to visit.",
       "minimum": 1,
-      "editor": "number"
+      "editor": "number",
+      "default": 20
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",

@@ -10,26 +10,22 @@ await Actor.init();
 // ------------------------- INPUT -------------------------
 const input = await Actor.getInput() ?? {};
 const {
-    keyword = '',
-    location = '',
-    posted_date = 'anytime',
-
-    results_wanted: RESULTS_WANTED_RAW = 100,
-    max_pages: MAX_PAGES_RAW = 999,
-
+    keyword,
+    location,
+    posted_date,
+    results_wanted = 100,
+    max_pages = 20,
     collectDetails = true,
-
     startUrl,
     url,
     startUrls,
-
     cookies,
     cookiesJson,
     proxyConfiguration,
 } = input;
 
-const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW) ? Math.max(1, +RESULTS_WANTED_RAW) : Number.MAX_SAFE_INTEGER;
-const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW) ? Math.max(1, +MAX_PAGES_RAW) : 999;
+const RESULTS_WANTED = Number.isFinite(+results_wanted) ? Math.max(1, +results_wanted) : Number.MAX_SAFE_INTEGER;
+const MAX_PAGES = Number.isFinite(+max_pages) ? Math.max(1, +max_pages) : 20;
 
 // ------------------------- HELPERS -------------------------
 const slugify = (s) => (s ?? '')
@@ -242,11 +238,18 @@ const proxyConf = proxyConfiguration
     : undefined;
 
 // ------------------------- CRAWLER -------------------------
-let jobCount = 0;
+const crawlerState = {
+    jobsCount: 0,
+    jobsEnqueued: 0,
+};
+
 const cookieHeader = normalizeCookieHeader({ cookies, cookiesJson });
 
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConf,
+    // Lower concurrency to be gentler on the target site and avoid blocks.
+    // Increase if you have a good proxy pool and are confident.
+    maxConcurrency: 50,
     maxRequestsPerMinute: 600,
     requestHandlerTimeoutSecs: 60,
     navigationTimeoutSecs: 60,
@@ -258,8 +261,15 @@ const crawler = new CheerioCrawler({
             request.headers.Cookie = cookieHeader;
         }
     }],
-    async requestHandler({ request, $, log: crawlerLog, enqueueLinks }) {
+    async requestHandler({ request, $, log: crawlerLog, enqueueLinks, crawler: cheerioCrawler }) {
         const { label, pageNo = 1 } = request.userData ?? {};
+
+        // Check if we should stop the crawl
+        if (crawlerState.jobsCount >= RESULTS_WANTED && !cheerioCrawler.isFinished()) {
+            log.info(`Reached target of ${RESULTS_WANTED} jobs. Aborting crawl...`);
+            await cheerioCrawler.teardown();
+            return;
+        }
 
         if (label === 'LIST' || !label) {
             const links = collectJobLinks($);
@@ -267,27 +277,35 @@ const crawler = new CheerioCrawler({
 
             if (!collectDetails) {
                 for (const link of links) {
-                    if (jobCount >= RESULTS_WANTED) break;
+                    if (crawlerState.jobsCount >= RESULTS_WANTED) break;
                     await Dataset.pushData({ url: link, _source: 'reed.co.uk', _fetchedAt: new Date().toISOString(), _from: 'list' });
-                    jobCount++;
+                    crawlerState.jobsCount++;
                 }
             } else {
+                const urlsToEnqueue = [];
                 for (const link of links) {
-                    if (jobCount >= RESULTS_WANTED) break;
-                    await enqueueLinks({ urls: [link], userData: { label: 'DETAIL' } });
+                    if (crawlerState.jobsEnqueued >= RESULTS_WANTED) break;
+                    urlsToEnqueue.push({ url: link, userData: { label: 'DETAIL' } });
+                    crawlerState.jobsEnqueued++;
+                }
+                if (urlsToEnqueue.length > 0) {
+                    await enqueueLinks({ requests: urlsToEnqueue });
                 }
             }
-            if (jobCount >= RESULTS_WANTED) return;
+
+            if (crawlerState.jobsCount >= RESULTS_WANTED || crawlerState.jobsEnqueued >= RESULTS_WANTED) return;
             if (pageNo >= MAX_PAGES) return;
+
             const nextUrl = findNextUrl($, request.url);
             if (nextUrl) {
-                await enqueueLinks({ urls: [nextUrl], userData: { label: 'LIST', pageNo: pageNo + 1 } });
+                await enqueueLinks({ urls: [nextUrl], userData: { label: 'LIST', pageNo: pageNo + 1 }});
             }
             return;
         }
 
         if (label === 'DETAIL') {
-            if (jobCount >= RESULTS_WANTED) return;
+            if (crawlerState.jobsCount >= RESULTS_WANTED) return;
+
             const jsonld = parseJsonLdJob($);
             const title = jsonld.title || $('h1').first().text().trim();
             let company = jsonld.hiringOrganization || $('h1').nextAll('a').first().text().trim();
@@ -323,12 +341,12 @@ const crawler = new CheerioCrawler({
                 _from: 'detail',
             };
             await Dataset.pushData(item);
-            jobCount++;
+            crawlerState.jobsCount++;
         }
     }
 });
 
 await crawler.run(initialUrls.map(u => ({ url: u, userData: { label: 'LIST', pageNo: 1 } })));
-log.info(`Done. Scraped: ${jobCount}`);
+log.info(`Done. Scraped: ${crawlerState.jobsCount}`);
 
 await Actor.exit();
