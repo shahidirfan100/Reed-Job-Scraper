@@ -96,8 +96,47 @@ const proxyConf = proxyConfiguration
     ? await Actor.createProxyConfiguration(proxyConfiguration)
     : undefined;
 
+// Convert plain text description to HTML with proper tags
+const textToHtml = (text) => {
+    if (!text) return '';
+
+    // Split by double line breaks for paragraphs
+    const paragraphs = text.split(/\n\n+/);
+    let html = '';
+
+    for (const para of paragraphs) {
+        const trimmed = para.trim();
+        if (!trimmed) continue;
+
+        // Check if it's a list (lines starting with -, •, *, or numbers)
+        const lines = trimmed.split('\n');
+        const isList = lines.length > 1 && lines.every(l => /^[\-•*]\s|^\d+[\.\)]\s/.test(l.trim()));
+
+        if (isList) {
+            html += '<ul>';
+            for (const line of lines) {
+                const cleaned = line.replace(/^[\-•*]\s|^\d+[\.\)]\s/, '').trim();
+                if (cleaned) html += `<li>${cleaned}</li>`;
+            }
+            html += '</ul>';
+        } else if (/^#{1,3}\s/.test(trimmed) || trimmed.length < 60 && trimmed === trimmed.toUpperCase()) {
+            // Looks like a heading
+            html += `<h2><strong>${trimmed.replace(/^#+\s/, '')}</strong></h2>`;
+        } else {
+            // Regular paragraph
+            // Check for bold text (words in CAPS or surrounded by **)
+            let formatted = trimmed.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            html += `<p>${formatted}</p>`;
+        }
+    }
+
+    return html;
+};
+
 // ------------------------- SHARED STATE -------------------------
 let jobsScraped = 0;
+const batchBuffer = [];
+const BATCH_SIZE = 10;
 
 // ------------------------- CRAWLER -------------------------
 const crawler = new CheerioCrawler({
@@ -157,7 +196,12 @@ const crawler = new CheerioCrawler({
         // Process each job
         for (const job of jobs) {
             if (jobsScraped >= RESULTS_WANTED) {
-                crawlerLog.info(`Reached target: ${jobsScraped}/${RESULTS_WANTED} jobs. Stopping.`);
+                // Push any remaining items in buffer
+                if (batchBuffer.length > 0) {
+                    await Dataset.pushData(batchBuffer);
+                    batchBuffer.length = 0;
+                }
+                crawlerLog.info(`✓ Target reached: ${jobsScraped}/${RESULTS_WANTED} jobs scraped`);
                 return;
             }
 
@@ -175,6 +219,9 @@ const crawler = new CheerioCrawler({
             } else if (jobDetail.salaryTo) {
                 salary = `Up to £${jobDetail.salaryTo.toLocaleString()}`;
             }
+
+            // Convert description to HTML
+            const description_html = textToHtml(jobDetail.jobDescription);
 
             const item = {
                 url: jobUrl,
@@ -194,25 +241,38 @@ const crawler = new CheerioCrawler({
                 isEasyApply: jobDetail.isEasyApply || false,
                 applications: jobDetail.applications || null,
                 description_text: jobDetail.jobDescription || null,
+                description_html,
                 _source: 'reed.co.uk',
                 _fetchedAt: new Date().toISOString(),
                 _from: 'list_nextdata',
             };
 
-            await Dataset.pushData(item);
+            batchBuffer.push(item);
             jobsScraped++;
-            crawlerLog.info(`✓ Job ${jobsScraped}/${RESULTS_WANTED} saved: ${item.title || 'Untitled'}`);
+
+            // Push batch when buffer reaches BATCH_SIZE
+            if (batchBuffer.length >= BATCH_SIZE) {
+                await Dataset.pushData(batchBuffer);
+                crawlerLog.info(`✓ Saved ${jobsScraped} jobs (batch of ${batchBuffer.length})`);
+                batchBuffer.length = 0;
+            }
+        }
+
+        // Push any remaining items in buffer after processing all jobs on this page
+        if (batchBuffer.length > 0) {
+            await Dataset.pushData(batchBuffer);
+            crawlerLog.info(`✓ Saved ${jobsScraped} jobs (batch of ${batchBuffer.length})`);
+            batchBuffer.length = 0;
         }
 
         // Check if we should stop
         if (jobsScraped >= RESULTS_WANTED) {
-            crawlerLog.info(`Target reached: ${jobsScraped}/${RESULTS_WANTED}. Stopping pagination.`);
             return;
         }
 
         // Check page limit
         if (pageNo >= MAX_PAGES) {
-            crawlerLog.info(`Max pages (${MAX_PAGES}) reached. Stopping pagination.`);
+            crawlerLog.info(`✓ Max pages (${MAX_PAGES}) reached. Stopping pagination.`);
             return;
         }
 
@@ -239,6 +299,13 @@ const crawler = new CheerioCrawler({
 });
 
 await crawler.run(initialUrls.map(u => ({ url: u, userData: { pageNo: 1 } })));
-log.info(`✓ Scraping completed. Total jobs scraped: ${jobsScraped}/${RESULTS_WANTED}`);
+
+// Push any final remaining items
+if (batchBuffer.length > 0) {
+    await Dataset.pushData(batchBuffer);
+    log.info(`✓ Final batch saved: ${batchBuffer.length} jobs`);
+}
+
+log.info(`✓ Scraping completed. Total: ${jobsScraped} jobs`);
 
 await Actor.exit();
