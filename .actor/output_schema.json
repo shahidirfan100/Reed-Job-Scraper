@@ -1,11 +1,83 @@
 {
     "actorOutputSchemaVersion": 1,
-    "title": "Output schema",
+    "title": "Reed.co.uk Job Scraper Output",
+    "type": "object",
     "properties": {
-        "overview": {
+        "url": {
             "type": "string",
-            "title": "Overview",
-            "template": "{{links.apiDefaultDatasetUrl}}/items?view=overview"
+            "description": "URL of the job listing"
+        },
+        "jobId": {
+            "type": "string",
+            "description": "Unique identifier for the job"
+        },
+        "title": {
+            "type": "string",
+            "description": "Job title"
+        },
+        "company": {
+            "type": "string",
+            "description": "Hiring organization name"
+        },
+        "location": {
+            "type": "string",
+            "description": "Job location"
+        },
+        "postalCode": {
+            "type": "string",
+            "description": "Postal code of the job location"
+        },
+        "salary": {
+            "type": "string",
+            "description": "Salary range or value"
+        },
+        "salaryMin": {
+            "type": "number",
+            "description": "Minimum salary"
+        },
+        "salaryMax": {
+            "type": "number",
+            "description": "Maximum salary"
+        },
+        "currency": {
+            "type": "string",
+            "description": "Currency code (e.g. GBP)"
+        },
+        "datePosted": {
+            "type": "string",
+            "description": "Date the job was posted"
+        },
+        "dateExpires": {
+            "type": "string",
+            "description": "Date the job listing expires"
+        },
+        "employmentType": {
+            "type": "string",
+            "description": "Type of employment (e.g. Full-time, Permanent)"
+        },
+        "applications": {
+            "type": "integer",
+            "description": "Number of applications received"
+        },
+        "description_text": {
+            "type": "string",
+            "description": "Cleaned text description of the job"
+        },
+        "description_html": {
+            "type": "string",
+            "description": "HTML description of the job"
+        },
+        "_source": {
+            "type": "string",
+            "description": "Source of the data"
+        },
+        "_fetchedAt": {
+            "type": "string",
+            "description": "Timestamp of extraction"
+        },
+        "_from": {
+            "type": "string",
+            "description": "Method of extraction (json, html, etc)"
         }
     }
 }
