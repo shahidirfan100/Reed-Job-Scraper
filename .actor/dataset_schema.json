@@ -10,8 +10,8 @@
           "company",
           "location",
           "salary",
-          "job_type",
-          "date_posted",
+          "employmentType",
+          "datePosted",
           "url"
         ]
       },
@@ -34,11 +34,11 @@
             "label": "Salary",
             "format": "text"
           },
-          "job_type": {
+          "employmentType": {
             "label": "Job Type",
             "format": "text"
           },
-          "date_posted": {
+          "datePosted": {
             "label": "Posted",
             "format": "text"
           },
