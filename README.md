@@ -1,33 +1,33 @@
-# Reed.co.uk Job Scraper
+# Reed Jobs Scraper
 
-Extract comprehensive job listings from Reed.co.uk — the UK's largest job board — with ease. Collect job titles, companies, salaries, locations, employment types, and full descriptions at scale. Perfect for recruitment research, salary benchmarking, market intelligence, and workforce analysis.
+Extract comprehensive Reed.co.uk job listings into structured datasets you can use for hiring research, salary benchmarking, and market analysis. Collect rich, low-noise job records with detailed attributes like salary ranges, work patterns, taxonomy categories, employer references, and posting metadata. Built for fast runs, scheduled monitoring, and production-ready exports.
 
 ## Features
 
-- **Keyword & Location Search** — Target specific roles and cities or provide a custom Reed search URL directly
-- **Full Job Detail Extraction** — Optionally visit each job page for complete descriptions, salary details, and metadata
-- **Automatic Pagination** — Traverses all result pages automatically to reach your desired job count
-- **Date Filtering** — Filter by posting date: today, last 3 days, last 7 days, or last 14 days
-- **Configurable Result Limits** — Set a maximum number of jobs or pages for controlled, efficient runs
-- **Proxy Support** — Works seamlessly with Apify Proxy for reliable, uninterrupted data collection
-- **Structured Dataset Output** — Clean, consistent JSON records ready for export and analysis
+- **Rich Job Records** — Capture high-value job attributes beyond basic title, company, and location
+- **Low-Noise Output** — Removes empty fields to keep datasets cleaner and easier to analyze
+- **Automatic Pagination** — Continues across result pages until your target count is reached
+- **Duplicate Protection** — Skips repeated jobs across pages and overlapping searches
+- **Flexible Search Inputs** — Start from keyword/location filters or a direct search URL
+- **Date Filtering Support** — Filter results by posting recency for fresher datasets
+- **Proxy Ready** — Works with Apify Proxy configuration for reliable collection at scale
 
 ## Use Cases
 
-### Recruitment & Talent Acquisition
-Find and monitor open positions across the UK job market. Track hiring trends by industry, location, and role to source candidates faster and stay ahead of competitor hiring activity.
+### Recruitment Intelligence
+Track active hiring trends by role, region, and employment type. Build repeatable snapshots to compare market demand week over week.
 
 ### Salary Benchmarking
-Collect salary data across hundreds of job listings to benchmark compensation for specific roles and locations. Build accurate, up-to-date salary reports for HR teams and finance departments.
+Collect salary ranges and salary metadata to benchmark compensation by location, sector, and role family.
 
-### Job Market Research
-Analyze which skills, qualifications, and job titles are in highest demand. Understand market trends over time and identify growth areas within sectors like technology, finance, healthcare, and more.
+### Employer Targeting
+Identify organizations currently hiring for specific job clusters and build prospect lists for outreach workflows.
 
-### Lead Generation for Recruitment Agencies
-Automatically gather lists of companies that are actively hiring. Use employer details and open positions as qualified leads for outreach and placement services.
+### Labor Market Research
+Create structured datasets for reporting on job volume, remote options, contract mix, and role-level taxonomy shifts.
 
-### Academic & Economic Research
-Build large-scale datasets of UK employment data for academic study, labour market analysis, or economic forecasting — with consistent, structured records across thousands of postings.
+### Candidate Product Features
+Power job alerts, dashboards, and internal analytics tools with regularly refreshed job listing data.
 
 ---
 
@@ -35,88 +35,97 @@ Build large-scale datasets of UK employment data for academic study, labour mark
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `startUrl` | String | No | — | A specific Reed.co.uk search URL to start from. Overrides keyword/location if provided. |
-| `keyword` | String | No | — | Job title or keywords to search for (e.g., `"software developer"`). |
-| `location` | String | No | — | Geographic location to filter jobs (e.g., `"London"`, `"Manchester"`). |
-| `posted_date` | String | No | `"anytime"` | Filter by posting recency: `"anytime"`, `"today"`, `"last3days"`, `"last7days"`, `"last14days"`. |
-| `collectDetails` | Boolean | No | `true` | Visit individual job pages to collect full descriptions and additional metadata. |
-| `results_wanted` | Integer | No | `100` | Maximum number of job listings to collect. Leave empty to collect all available. |
-| `max_pages` | Integer | No | `20` | Maximum number of search result pages to visit — a safety cap for large runs. |
-| `proxyConfiguration` | Object | No | — | Apify Proxy settings for reliable data collection. |
+| `startUrl` | String | No | — | Start from a specific Reed search URL. |
+| `keyword` | String | No | — | Job keyword or role phrase (for example, `"data analyst"`). |
+| `location` | String | No | — | Location filter (for example, `"London"`). |
+| `posted_date` | String | No | `"anytime"` | Date filter: `"anytime"`, `"today"`, `"last3days"`, `"last7days"`, `"last14days"`. |
+| `collectDetails` | Boolean | No | `true` | Optional enrichment toggle for detail-oriented runs. |
+| `results_wanted` | Integer | No | `100` | Maximum number of jobs to collect. |
+| `max_pages` | Integer | No | `50` | Safety cap on paginated result pages. |
+| `proxyConfiguration` | Object | No | — | Proxy settings for stable high-volume runs. |
 
 ---
 
 ## Output Data
 
-Each item saved to the dataset contains:
+Each dataset item can include rich fields such as:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `url` | String | Direct link to the job posting on Reed.co.uk |
+| `url` | String | Canonical Reed job URL |
+| `jobId` | String | Reed job identifier |
 | `title` | String | Job title |
-| `company` | String | Name of the hiring company |
-| `location` | String | Job location (city, region) |
-| `salary` | String | Salary or pay range as displayed |
-| `datePosted` | String | Date the job was posted (ISO format) |
-| `employmentType` | String | Employment type (e.g., `"Full-time"`, `"Part-time"`, `"Contract"`) |
-| `validThrough` | String | Expiry date of the job listing (ISO format) |
-| `postalCode` | String | Postal code of the job location |
-| `description_html` | String | Full job description in HTML format (requires `collectDetails`) |
-| `description_text` | String | Plain text version of the job description (requires `collectDetails`) |
+| `company` | String | Employer name |
+| `employerId` | String | Employer profile reference |
+| `location` | String | Display location |
+| `countyLocation` | String | County-level location when available |
+| `salary` | String | Salary text |
+| `salaryMin` | Number | Lower salary bound |
+| `salaryMax` | Number | Upper salary bound |
+| `salaryType` | String | Salary cadence/type metadata |
+| `currency` | String | Salary currency |
+| `datePosted` | String | Posting timestamp |
+| `dateUpdated` | String | Last update timestamp |
+| `validThrough` | String | Expiry timestamp |
+| `employmentType` | String | Normalized type (Permanent, Contract, etc.) |
+| `isFullTime` | Boolean | Full-time flag |
+| `isPartTime` | Boolean | Part-time flag |
+| `isEasyApply` | Boolean | Easy apply flag |
+| `isFeatured` | Boolean | Featured listing marker |
+| `remoteWorkingOption` | String | Remote/hybrid metadata when provided |
+| `taxonomyLevel1` | String | Primary role taxonomy |
+| `taxonomyLevel2` | String | Secondary role taxonomy |
+| `description_text` | String | Job description text |
+| `description_html` | String | Job description in paragraph HTML |
+| `totalAvailableForSearch` | Number | Total jobs available for that query |
+| `page` | Number | Source page number |
+| `_fetchedAt` | String | Collection timestamp |
+
+Additional source fields may also be included when available to maximize data coverage.
 
 ---
 
 ## Usage Examples
 
-### Basic Job Search
-
-Search for Python developer roles in London:
-
-```json
-{
-    "keyword": "python developer",
-    "location": "London",
-    "results_wanted": 50
-}
-```
-
-### Filter by Date Posted
-
-Find nursing jobs posted in the last 3 days across the UK:
-
-```json
-{
-    "keyword": "nurse",
-    "posted_date": "last3days",
-    "results_wanted": 100,
-    "collectDetails": true
-}
-```
-
-### Scrape From a Custom Reed URL
-
-Use a specific Reed.co.uk search URL to start from (e.g., with advanced filters already applied):
-
-```json
-{
-    "startUrl": "https://www.reed.co.uk/jobs/data-analyst-jobs-in-manchester",
-    "results_wanted": 200,
-    "collectDetails": true
-}
-```
-
-### Large-Scale Collection with Proxy
-
-Collect all available software engineering jobs with proxy enabled:
+### Basic Search
 
 ```json
 {
     "keyword": "software engineer",
-    "location": "United Kingdom",
+    "location": "London",
+    "results_wanted": 20
+}
+```
+
+### Date-Filtered Monitoring
+
+```json
+{
+    "keyword": "product manager",
+    "location": "Manchester",
     "posted_date": "last7days",
-    "results_wanted": 500,
-    "max_pages": 50,
-    "collectDetails": true,
+    "results_wanted": 100,
+    "max_pages": 20
+}
+```
+
+### Direct URL Collection
+
+```json
+{
+    "startUrl": "https://www.reed.co.uk/jobs/data-analyst-jobs-in-birmingham",
+    "results_wanted": 50,
+    "max_pages": 10
+}
+```
+
+### Proxy-Enabled Run
+
+```json
+{
+    "keyword": "nurse",
+    "location": "Leeds",
+    "results_wanted": 120,
     "proxyConfiguration": {
         "useApifyProxy": true,
         "apifyProxyGroups": ["RESIDENTIAL"]
@@ -130,17 +139,30 @@ Collect all available software engineering jobs with proxy enabled:
 
 ```json
 {
-    "url": "https://www.reed.co.uk/jobs/software-engineer/12345678",
-    "title": "Senior Software Engineer",
-    "company": "Tech Solutions Ltd",
-    "location": "London",
-    "salary": "£65,000 - £80,000 per annum",
-    "datePosted": "2024-06-10T00:00:00.000Z",
-    "employmentType": "Full-time",
-    "validThrough": "2024-07-10T00:00:00.000Z",
-    "postalCode": "EC1A 1BB",
-    "description_html": "<p>We are looking for a Senior Software Engineer to join our growing team...</p>",
-    "description_text": "We are looking for a Senior Software Engineer to join our growing team..."
+    "jobId": "56641091",
+    "jobTitle": "Regional Sales Manager",
+    "salaryDescription": "£55,000 - £65,000",
+    "salaryFrom": 55000,
+    "salaryTo": 65000,
+    "salaryType": "Annual",
+    "displayLocationName": "Leeds",
+    "remoteWorkingOption": "Hybrid",
+    "isEasyApply": true,
+    "taxonomyLevel1": "Sales",
+    "taxonomyLevel2": "Medical Sales",
+    "url": "https://www.reed.co.uk/jobs/regional-sales-manager/56641091",
+    "title": "Regional Sales Manager",
+    "company": "Evolve Selection Ltd",
+    "location": "Leeds",
+    "salary": "£55,000 - £65,000",
+    "currency": "GBP",
+    "datePosted": "2026-03-13T12:42:49.98",
+    "employmentType": "Permanent",
+    "description_text": "Evolve have partnered with a leading Ophthalmology organisation...",
+    "page": 1,
+    "totalAvailableForSearch": 1080,
+    "_source": "reed.co.uk",
+    "_fetchedAt": "2026-03-13T12:43:41.663Z"
 }
 ```
 
@@ -148,99 +170,79 @@ Collect all available software engineering jobs with proxy enabled:
 
 ## Tips for Best Results
 
-### Choosing Your Start Method
-- Use **keyword + location** for flexible, broad searches — great for market research
-- Use **startUrl** when you need an exact Reed.co.uk search with custom filters already applied
-- Avoid combining `startUrl` with keyword/location — the URL takes priority
+### Start Small, Then Scale
+- Begin with `results_wanted: 20` for quick validation
+- Increase limits once output quality matches your needs
 
-### Optimise Your Run Size
-- Start with `results_wanted: 20–50` to test your configuration before scaling up
-- Increase `max_pages` proportionally — each page typically returns 25 results
-- Disable `collectDetails` for faster, lighter runs when only basic listing data is needed
+### Use Focused Queries
+- Combine specific keywords with locations for cleaner datasets
+- Prefer direct `startUrl` when you already have a refined Reed search
 
-### Getting Full Job Descriptions
-- Enable `collectDetails: true` to fetch full descriptions, salary breakdowns, and extra metadata
-- Runs with detail collection are slower — plan your result count accordingly
-- Use a proxy for runs collecting more than 100 detailed job pages
+### Keep Runs Reliable
+- Set `max_pages` based on expected result volume
+- Use proxy configuration for larger, repeated runs
 
-### Proxy Configuration
-For large-scale or high-frequency runs, residential proxies are recommended:
-
-```json
-{
-    "proxyConfiguration": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
-    }
-}
-```
+### Build Repeatable Monitoring
+- Schedule daily or weekly runs for trend tracking
+- Compare snapshots to detect hiring momentum changes
 
 ---
 
 ## Integrations
 
-Connect your Reed job data with the tools you already use:
+Connect your dataset with:
 
-- **Google Sheets** — Export directly for collaborative analysis and filtering
-- **Airtable** — Build a searchable jobs database for recruitment teams
-- **Slack** — Receive notifications when new relevant jobs appear
-- **Make (Integromat)** — Trigger automated workflows from newly scraped data
-- **Zapier** — Push job data to CRMs, email tools, or internal systems
-- **Webhooks** — Send results to any custom endpoint in real time
+- **Google Sheets** — Fast sharing and tabular analysis
+- **Airtable** — Searchable operational job database
+- **Slack** — Alerting for new role patterns
+- **Make** — Automated no-code workflows
+- **Zapier** — Trigger downstream business actions
+- **Webhooks** — Push results into custom systems
 
 ### Export Formats
 
-Download your dataset in multiple formats from the Apify platform:
-
-- **JSON** — For developers and API integrations
-- **CSV** — For spreadsheet tools like Excel or Google Sheets
-- **Excel (.xlsx)** — For business reporting
-- **XML** — For system-to-system integrations
-- **JSONL** — For large datasets and streaming ingestion
+- **JSON** — Developer-friendly structured output
+- **CSV** — Spreadsheet workflows
+- **Excel** — Reporting and stakeholder sharing
+- **XML** — Legacy system integrations
+- **JSONL** — Stream-friendly ingestion
 
 ---
 
 ## Frequently Asked Questions
 
-### How many jobs can I collect?
-You can collect as many jobs as are available on Reed.co.uk for a given search. Leave `results_wanted` empty to collect all results, or set a number to cap the run.
+### How many jobs can I collect in one run?
+You can collect up to your configured `results_wanted` value, bounded by available listings and `max_pages`.
 
-### Do I need a Reed account?
-No account is required. The scraper collects publicly available job listings without authentication.
+### Can I run without a keyword?
+Yes. You can provide a `startUrl` directly, or run broad collection with location/date constraints.
 
-### Can I search multiple keywords or locations?
-Currently one search configuration is supported per run. To collect jobs for multiple keywords or locations, run the actor multiple times with different inputs or use the Apify API to trigger multiple runs.
+### Why do some fields vary between records?
+Job listings are publisher-dependent, so available fields differ by employer and listing type.
 
-### What does `collectDetails` do?
-When enabled, the scraper visits each individual job page to retrieve the full job description, detailed salary info, postal code, and expiry date. Disabling it makes runs faster but returns less data per listing.
+### Does the actor avoid duplicates?
+Yes. Duplicate jobs are skipped using stable identifiers and URL fallback matching.
 
-### What is `startUrl` used for?
-You can paste any Reed.co.uk search results URL directly — for example, after using Reed's advanced filter UI. The scraper will start from that URL and paginate through all results.
+### Can I schedule this actor?
+Yes. Use Apify schedules for continuous market monitoring and reporting pipelines.
 
-### Will the scraper miss jobs if I set `max_pages` too low?
-Yes. Each page contains approximately 25 results. If you want 500 jobs, set `max_pages` to at least 20. The `results_wanted` limit stops collection once reached, even if more pages remain.
-
-### Is data available in real time?
-The scraper fetches data at the time of the run. Scheduling the actor to run daily or weekly ensures your dataset stays up to date.
-
-### Can I use this for salary analysis?
-Yes. Salary data is extracted from each listing (and more accurately from detail pages). You can export to CSV or connect to a BI tool for aggregation and analysis.
+### Is this suitable for salary analysis?
+Yes. The output includes salary text, bounds, and related metadata when available.
 
 ---
 
 ## Support
 
-For issues or feature requests, contact support through the Apify Console.
+For issues or feature requests, use Apify Console support channels.
 
 ### Resources
 
 - [Apify Documentation](https://docs.apify.com/)
-- [API Reference](https://docs.apify.com/api/v2)
-- [Scheduling Runs](https://docs.apify.com/schedules)
-- [Apify Proxy](https://docs.apify.com/proxy)
+- [Apify API Reference](https://docs.apify.com/api/v2)
+- [Scheduling Runs](https://docs.apify.com/platform/schedules)
 
 ---
 
 ## Legal Notice
 
-This actor is designed for legitimate data collection purposes. Users are responsible for ensuring compliance with Reed.co.uk's terms of service and applicable laws. Use collected data responsibly, respect rate limits, and do not use this tool for any unlawful purpose.
+This actor is intended for legitimate data collection and analytics use. You are responsible for complying with applicable laws, platform terms, and data usage policies.

@@ -6,18 +6,32 @@
       "title": "Overview",
       "transformation": {
         "fields": [
+          "jobId",
           "title",
           "company",
           "location",
-          "salary",
           "employmentType",
+          "salary",
+          "salaryMin",
+          "salaryMax",
+          "currency",
           "datePosted",
+          "validThrough",
+          "isEasyApply",
+          "isFeatured",
+          "remoteWorkingOption",
+          "taxonomyLevel1",
+          "taxonomyLevel2",
           "url"
         ]
       },
       "display": {
         "component": "table",
         "properties": {
+          "jobId": {
+            "label": "Job ID",
+            "format": "text"
+          },
           "title": {
             "label": "Job Title",
             "format": "text"
@@ -30,16 +44,52 @@
             "label": "Location",
             "format": "text"
           },
-          "salary": {
-            "label": "Salary",
-            "format": "text"
-          },
           "employmentType": {
             "label": "Job Type",
             "format": "text"
           },
+          "salary": {
+            "label": "Salary",
+            "format": "text"
+          },
+          "salaryMin": {
+            "label": "Salary Min",
+            "format": "number"
+          },
+          "salaryMax": {
+            "label": "Salary Max",
+            "format": "number"
+          },
+          "currency": {
+            "label": "Currency",
+            "format": "text"
+          },
           "datePosted": {
             "label": "Posted",
+            "format": "date"
+          },
+          "validThrough": {
+            "label": "Valid Through",
+            "format": "date"
+          },
+          "isEasyApply": {
+            "label": "Easy Apply",
+            "format": "boolean"
+          },
+          "isFeatured": {
+            "label": "Featured",
+            "format": "boolean"
+          },
+          "remoteWorkingOption": {
+            "label": "Remote",
+            "format": "text"
+          },
+          "taxonomyLevel1": {
+            "label": "Category",
+            "format": "text"
+          },
+          "taxonomyLevel2": {
+            "label": "Specialism",
             "format": "text"
           },
           "url": {
