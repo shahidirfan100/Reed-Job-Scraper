@@ -14,12 +14,14 @@
       "title": "Keyword (if not using Start URL)",
       "type": "string",
       "description": "Job search keyword(s), e.g., 'Software Developer'.",
+      "prefill": "administrative assistant",
       "editor": "textfield"
     },
     "location": {
       "title": "Location (if not using Start URL)",
       "type": "string",
       "description": "Geographic location to search in, e.g., 'London'.",
+      "prefill": "London",
       "editor": "textfield"
     },
     "posted_date": {
@@ -48,6 +50,7 @@
       "type": "integer",
       "description": "The maximum number of jobs to collect. Leave empty to collect all available jobs.",
       "minimum": 1,
+      "prefill": 20,
       "default": 20,
       "editor": "number"
     },

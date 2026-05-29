@@ -23,7 +23,22 @@ const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW)
     ? Math.max(1, +MAX_PAGES_RAW)
     : 50;
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise((resolve) => {
+    setTimeout(resolve, ms);
+});
+const USER_AGENT_POOL = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+];
+const BLOCK_PAGE_MARKERS = [
+    'cf-chl',
+    'cloudflare',
+    'captcha',
+    'access denied',
+    'just a moment',
+    'verify you are human',
+];
 
 const sanitizeRecord = (record) => {
     const cleaned = {};
@@ -86,24 +101,70 @@ const buildPagedUrl = (baseUrl, pageNo) => {
     return target.href;
 };
 
-const parseStructuredPayload = (html) => {
-    const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/i);
-    if (!match) return null;
-
-    let parsed;
+const parseJsonCandidate = (value) => {
     try {
-        parsed = JSON.parse(match[1]);
+        return JSON.parse(value);
     } catch {
         return null;
     }
+};
 
-    const searchResults = parsed?.props?.pageProps?.searchResults;
-    if (!searchResults) return null;
-
+const extractSearchResults = (parsed) => {
+    const searchResults = parsed?.props?.pageProps?.searchResults
+        ?? parsed?.pageProps?.searchResults
+        ?? parsed?.searchResults
+        ?? null;
+    if (!searchResults || typeof searchResults !== 'object') return null;
     return {
         count: Number(searchResults.count) || null,
         jobs: Array.isArray(searchResults.jobs) ? searchResults.jobs : [],
     };
+};
+
+const parseStructuredPayload = (html) => {
+    if (!html || typeof html !== 'string') return null;
+
+    const candidates = [];
+
+    const nextDataTagMatch = html.match(/<script[^>]*\bid=(["'])__NEXT_DATA__\1[^>]*>([\s\S]*?)<\/script>/i);
+    if (nextDataTagMatch?.[2]) candidates.push(nextDataTagMatch[2]);
+
+    const nextDataAssignmentMatch = html.match(/__NEXT_DATA__\s*=\s*({[\s\S]*?})\s*;?\s*<\/script>/i);
+    if (nextDataAssignmentMatch?.[1]) candidates.push(nextDataAssignmentMatch[1]);
+
+    for (const candidate of candidates) {
+        const parsed = parseJsonCandidate(candidate);
+        const extracted = extractSearchResults(parsed);
+        if (extracted) return extracted;
+    }
+
+    return null;
+};
+
+const isLikelyBlockPage = (html) => {
+    if (!html || typeof html !== 'string') return false;
+    const lowered = html.toLowerCase();
+    return BLOCK_PAGE_MARKERS.some((marker) => lowered.includes(marker));
+};
+
+const buildRequestHeaders = (attempt) => {
+    const userAgent = USER_AGENT_POOL[(attempt - 1) % USER_AGENT_POOL.length];
+    return {
+        'User-Agent': userAgent,
+        'Accept-Language': 'en-GB,en;q=0.9,en-US;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Upgrade-Insecure-Requests': '1',
+    };
+};
+
+class PayloadNotFoundError extends Error {
+    constructor(message, details = {}) {
+        super(message);
+        this.name = 'PayloadNotFoundError';
+        this.details = details;
+    }
 };
 
 const toAbsoluteJobUrl = (relativeOrAbsoluteUrl) => {
@@ -271,21 +332,30 @@ const fetchPagePayload = async ({ targetUrl, proxyConf, maxRetries = 3 }) => {
             const response = await gotScraping({
                 url: targetUrl,
                 proxyUrl,
+                throwHttpErrors: false,
                 timeout: { request: 45000 },
-                headers: {
-                    'Accept-Language': 'en-GB,en;q=0.9,en-US;q=0.8',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Cache-Control': 'no-cache',
-                    'Pragma': 'no-cache',
-                },
+                headers: buildRequestHeaders(attempt),
             });
 
             const payload = parseStructuredPayload(response.body);
-            if (!payload) throw new Error('Structured payload not found');
+            if (!payload) {
+                const blocked = isLikelyBlockPage(response.body);
+                const message = blocked
+                    ? `Structured payload not found: likely anti-bot page (status ${response.statusCode})`
+                    : `Structured payload not found (status ${response.statusCode})`;
+                throw new PayloadNotFoundError(message, {
+                    blocked,
+                    statusCode: response.statusCode,
+                    bodyLength: response.body?.length ?? 0,
+                });
+            }
             return payload;
         } catch (error) {
             lastError = error;
-            if (attempt < maxRetries) await sleep(1000 * (2 ** (attempt - 1)));
+            if (attempt < maxRetries) {
+                log.warning(`Retrying ${targetUrl} (attempt ${attempt + 1}/${maxRetries}) due to: ${error.message}`);
+                await sleep(1000 * (2 ** (attempt - 1)));
+            }
         }
     }
 
@@ -322,11 +392,15 @@ for (const sourceUrl of startUrlList) {
         try {
             payload = await fetchPagePayload({ targetUrl: pageUrl, proxyConf });
         } catch (error) {
+            if (error instanceof PayloadNotFoundError && pageNo > 1 && totalSaved > 0) {
+                log.warning(`Auto-healed source stop at page ${pageNo}: ${error.message}. Treating as end of results for this source.`);
+                break;
+            }
             log.warning(`Stopped one source due to repeated page errors: ${error.message}`);
             break;
         }
 
-        const jobs = payload.jobs;
+        const { jobs } = payload;
         if (!jobs.length) {
             if (pageNo === 1) log.warning('No records found for one source URL.');
             break;
@@ -366,6 +440,7 @@ for (const sourceUrl of startUrlList) {
 
         if (jobs.length === 0) break;
         if (payload.count && pageNo * jobs.length >= payload.count) break;
+        await sleep(300 + Math.floor(Math.random() * 450));
     }
 }
 

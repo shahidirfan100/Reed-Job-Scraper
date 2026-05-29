@@ -1,9 +1,6 @@
 {
   "actorSpecification": 1,
   "name": "reed-jobs-scraper",
-  "meta": {
-    "generatedBy": "gpt-5-codex"
-  },
   "version": "1.0",
   "buildTag": "latest",
   "dockerfile": "../Dockerfile",
