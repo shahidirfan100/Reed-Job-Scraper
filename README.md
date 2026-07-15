@@ -39,7 +39,6 @@ Power job alerts, dashboards, and internal analytics tools with regularly refres
 | `keyword` | String | No | — | Job keyword or role phrase (for example, `"data analyst"`). |
 | `location` | String | No | — | Location filter (for example, `"London"`). |
 | `posted_date` | String | No | `"anytime"` | Date filter: `"anytime"`, `"today"`, `"last3days"`, `"last7days"`, `"last14days"`. |
-| `collectDetails` | Boolean | No | `true` | Optional enrichment toggle for detail-oriented runs. |
 | `results_wanted` | Integer | No | `100` | Maximum number of jobs to collect. |
 | `max_pages` | Integer | No | `50` | Safety cap on paginated result pages. |
 | `proxyConfiguration` | Object | No | — | Proxy settings for stable high-volume runs. |

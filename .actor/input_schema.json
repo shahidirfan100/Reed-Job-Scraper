@@ -1,6 +1,6 @@
 {
   "title": "Reed Jobs Scraper",
-  "description": "Scrape jobs from Reed.co.uk listings. Provide keyword/location or a Reed search URL. Actor paginates and optionally scrapes detail pages.",
+  "description": "Scrape jobs from Reed.co.uk listings. Provide keyword/location or a Reed search URL. Actor paginates and collects full job descriptions when available.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
@@ -37,13 +37,6 @@
       ],
       "prefill": "anytime",
       "editor": "select"
-    },
-    "collectDetails": {
-      "title": "Collect job details",
-      "type": "boolean",
-      "description": "If enabled, scraper opens job detail pages for full description/salary.",
-      "editor": "checkbox",
-      "default": true
     },
     "results_wanted": {
       "title": "Maximum number of jobs",

@@ -1,5 +1,7 @@
+import crypto from 'node:crypto';
+
 import { Actor, log } from 'apify';
-import { gotScraping } from 'got-scraping';
+import { Impit } from 'impit';
 
 await Actor.init();
 
@@ -26,11 +28,11 @@ const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW)
 const sleep = (ms) => new Promise((resolve) => {
     setTimeout(resolve, ms);
 });
-const USER_AGENT_POOL = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:147.0) Gecko/20100101 Firefox/147.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-];
+const randomInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
+const RATE_LIMIT_STATUSES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+const DETAIL_CONCURRENCY = 2;
+const DETAIL_RATE_LIMIT_DISABLE_THRESHOLD = 3;
+const REED_BFF_URL = 'https://api.reed.co.uk/api-bff-jobseeker-jobs/';
 const BLOCK_PAGE_MARKERS = [
     'cf-chl',
     'cloudflare',
@@ -147,24 +149,19 @@ const isLikelyBlockPage = (html) => {
     return BLOCK_PAGE_MARKERS.some((marker) => lowered.includes(marker));
 };
 
-const buildRequestHeaders = (attempt) => {
-    const userAgent = USER_AGENT_POOL[(attempt - 1) % USER_AGENT_POOL.length];
-    return {
-        'User-Agent': userAgent,
-        'Accept-Language': 'en-GB,en;q=0.9,en-US;q=0.8',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Upgrade-Insecure-Requests': '1',
-    };
-};
-
 class PayloadNotFoundError extends Error {
     constructor(message, details = {}) {
         super(message);
         this.name = 'PayloadNotFoundError';
         this.details = details;
     }
+};
+
+const getErrorStatus = (error) => error?.details?.statusCode ?? error?.status ?? error?.statusCode ?? null;
+const shouldBackoff = (error) => RATE_LIMIT_STATUSES.has(getErrorStatus(error));
+const getRetryDelay = ({ attempt, error, baseMs = 900, rateLimitBaseMs = 2500, capMs = 18000 }) => {
+    const multiplier = shouldBackoff(error) ? rateLimitBaseMs : baseMs;
+    return Math.min(capMs, multiplier * attempt + randomInt(400, 1800));
 };
 
 const toAbsoluteJobUrl = (relativeOrAbsoluteUrl) => {
@@ -225,6 +222,29 @@ const textToHtml = (text) => {
         .filter(Boolean)
         .map((chunk) => `<p>${chunk}</p>`)
         .join('');
+};
+
+const decodeHtmlEntities = (value) => value
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&pound;/gi, '£')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([\da-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)));
+
+const htmlToText = (html) => {
+    if (!html || typeof html !== 'string') return '';
+    return decodeHtmlEntities(html)
+        .replace(/<\s*br\s*\/?>/gi, '\n')
+        .replace(/<\/\s*(p|div|li|h[1-6]|tr)\s*>/gi, '\n')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n\s+/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
 };
 
 const extractScalarFields = (source, prefix = '') => {
@@ -323,38 +343,158 @@ const createDedupKey = (record) => {
     return null;
 };
 
-const fetchPagePayload = async ({ targetUrl, proxyConf, maxRetries = 3 }) => {
+const buildDetailApiUrl = (jobId) => {
+    const params = new URLSearchParams({
+        includeGaTags: 'false',
+        includeProfileDetails: 'false',
+        includeSimilarSearches: 'false',
+        includeSimilarJobs: 'false',
+        includeRecommendedCourses: 'false',
+        includeHiddenJobs: 'false',
+        shortlistedJobsCount: '0',
+    });
+    return `${REED_BFF_URL}job/consolidated/${encodeURIComponent(jobId)}/anonymous/?${params}`;
+};
+
+const fetchJobDetailPayload = async ({ record, client, maxRetries = 2 }) => {
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const proxyUrl = proxyConf ? await proxyConf.newUrl() : undefined;
-            const response = await gotScraping({
-                url: targetUrl,
-                proxyUrl,
-                throwHttpErrors: false,
-                timeout: { request: 45000 },
-                headers: buildRequestHeaders(attempt),
+            const timeout = AbortSignal.timeout(45000);
+            const response = await client.fetch(buildDetailApiUrl(record.jobId), {
+                signal: timeout,
+                headers: {
+                    'x-correlation-id': crypto.randomUUID(),
+                    'x-correlation-source-id': 'web-jobseeker-jobs',
+                    origin: 'https://www.reed.co.uk',
+                    referer: record.url || 'https://www.reed.co.uk/jobs',
+                },
             });
+            const text = await response.text();
+            const data = parseJsonCandidate(text);
+            const payload = data?.result?.jobDetails ?? null;
 
-            const payload = parseStructuredPayload(response.body);
             if (!payload) {
-                const blocked = isLikelyBlockPage(response.body);
+                const blocked = isLikelyBlockPage(text);
                 const message = blocked
-                    ? `Structured payload not found: likely anti-bot page (status ${response.statusCode})`
-                    : `Structured payload not found (status ${response.statusCode})`;
+                    ? `Detail API payload not found: likely anti-bot response (status ${response.status})`
+                    : `Detail API payload not found (status ${response.status})`;
                 throw new PayloadNotFoundError(message, {
                     blocked,
-                    statusCode: response.statusCode,
-                    bodyLength: response.body?.length ?? 0,
+                    statusCode: response.status,
+                    bodyLength: text.length,
+                });
+            }
+
+            return payload;
+        } catch (error) {
+            lastError = error;
+            if (attempt < maxRetries) {
+                await sleep(getRetryDelay({
+                    attempt,
+                    error,
+                    baseMs: 700,
+                    rateLimitBaseMs: 1800,
+                    capMs: 6000,
+                }));
+            }
+        }
+    }
+
+    throw lastError ?? new Error('Unknown detail fetch failure');
+};
+
+const detailStats = {
+    success: 0,
+    fallback: 0,
+    rateLimited: 0,
+    disabled: false,
+};
+
+const enrichRecordWithDetail = async ({ record, client }) => {
+    if (!record.jobId || detailStats.disabled) {
+        detailStats.fallback++;
+        return sanitizeRecord({
+            ...record,
+            description_text: record.description_text || record.jobDescriptionSnippet,
+            description_html: record.description_html || textToHtml(record.jobDescriptionSnippet || ''),
+        });
+    }
+
+    try {
+        await sleep(randomInt(220, 680));
+        const detail = await fetchJobDetailPayload({ record, client });
+        const descriptionHtml = typeof detail.description === 'string' ? detail.description.trim() : '';
+        const descriptionText = htmlToText(descriptionHtml);
+        detailStats.success++;
+
+        return sanitizeRecord({
+            ...record,
+            description_text: descriptionText || record.description_text || record.jobDescriptionSnippet,
+            description_html: descriptionHtml || record.description_html || textToHtml(record.jobDescriptionSnippet || ''),
+        });
+    } catch (error) {
+        detailStats.fallback++;
+        if (getErrorStatus(error) === 429) {
+            detailStats.rateLimited++;
+            if (detailStats.rateLimited >= DETAIL_RATE_LIMIT_DISABLE_THRESHOLD) {
+                detailStats.disabled = true;
+            }
+        }
+        return sanitizeRecord({
+            ...record,
+            description_text: record.description_text || record.jobDescriptionSnippet,
+            description_html: record.description_html || textToHtml(record.jobDescriptionSnippet || ''),
+        });
+    }
+};
+
+const mapWithConcurrency = async (items, limit, mapper) => {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+
+    const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (nextIndex < items.length) {
+            const currentIndex = nextIndex++;
+            results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+        }
+    });
+
+    await Promise.all(workers);
+    return results;
+};
+
+const fetchPagePayload = async ({ targetUrl, client, pageNo, maxRetries = 6 }) => {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const timeout = AbortSignal.timeout(45000);
+            const response = await client.fetch(targetUrl, { signal: timeout });
+            const body = await response.text();
+
+            const payload = parseStructuredPayload(body);
+            if (!payload) {
+                const blocked = isLikelyBlockPage(body);
+                const message = blocked
+                    ? `Structured payload not found: likely anti-bot page (status ${response.status})`
+                    : `Structured payload not found (status ${response.status})`;
+                throw new PayloadNotFoundError(message, {
+                    blocked,
+                    statusCode: response.status,
+                    bodyLength: body.length,
                 });
             }
             return payload;
         } catch (error) {
             lastError = error;
             if (attempt < maxRetries) {
-                log.warning(`Retrying ${targetUrl} (attempt ${attempt + 1}/${maxRetries}) due to: ${error.message}`);
-                await sleep(1000 * (2 ** (attempt - 1)));
+                const delay = getRetryDelay({ attempt, error });
+                if (attempt === 1 || attempt === maxRetries - 1) {
+                    log.warning(`Search page ${pageNo} temporarily unavailable (${error.message}). Retrying ${attempt + 1}/${maxRetries} in ${Math.round(delay / 1000)}s.`);
+                }
+                await sleep(delay);
             }
         }
     }
@@ -373,8 +513,23 @@ const startUrlList = normalizeInputUrls({
 const proxyConf = proxyConfiguration
     ? await Actor.createProxyConfiguration(proxyConfiguration)
     : undefined;
+const proxyUrl = proxyConf ? await proxyConf.newUrl() : undefined;
+const client = new Impit({
+    browser: 'chrome',
+    ignoreTlsErrors: true,
+    ...(proxyUrl && { proxyUrl }),
+});
+const hasExplicitStartUrl = Boolean(
+    startUrl
+    || url
+    || (Array.isArray(startUrls) && startUrls.length > 0)
+);
 
-log.info(`Starting run with ${startUrlList.length} source URL(s).`);
+if (hasExplicitStartUrl) {
+    log.info(`Starting Reed URL scrape with ${startUrlList.length} source URL(s).`);
+} else {
+    log.info(`Starting Reed keyword search for "${keyword || 'all jobs'}"${location ? ` in "${location}"` : ''}.`);
+}
 
 let totalSaved = 0;
 let duplicateCount = 0;
@@ -390,10 +545,14 @@ for (const sourceUrl of startUrlList) {
         let payload;
 
         try {
-            payload = await fetchPagePayload({ targetUrl: pageUrl, proxyConf });
+            payload = await fetchPagePayload({ targetUrl: pageUrl, client, pageNo });
         } catch (error) {
+            if (shouldBackoff(error) && pageNo > 1 && totalSaved > 0) {
+                log.warning(`Stopped this source after repeated rate limits on page ${pageNo}. Saved ${totalSaved} record(s); try lowering requested results or enabling residential proxy for larger runs.`);
+                break;
+            }
             if (error instanceof PayloadNotFoundError && pageNo > 1 && totalSaved > 0) {
-                log.warning(`Auto-healed source stop at page ${pageNo}: ${error.message}. Treating as end of results for this source.`);
+                log.warning(`Stopped this source at page ${pageNo} after repeated payload errors. Saved ${totalSaved} record(s).`);
                 break;
             }
             log.warning(`Stopped one source due to repeated page errors: ${error.message}`);
@@ -433,10 +592,15 @@ for (const sourceUrl of startUrlList) {
         }
 
         if (batch.length) {
-            await Actor.pushData(batch);
+            const enrichedBatch = await mapWithConcurrency(
+                batch,
+                DETAIL_CONCURRENCY,
+                (record) => enrichRecordWithDetail({ record, client }),
+            );
+            await Actor.pushData(enrichedBatch);
         }
 
-        log.info(`Processed page ${pageNo}. Added ${batch.length} record(s). Total saved: ${totalSaved}.`);
+        log.info(`Page ${pageNo}: saved ${batch.length}; total ${totalSaved}.`);
 
         if (jobs.length === 0) break;
         if (payload.count && pageNo * jobs.length >= payload.count) break;
@@ -446,6 +610,9 @@ for (const sourceUrl of startUrlList) {
 
 if (duplicateCount > 0) {
     log.info(`Skipped ${duplicateCount} duplicate record(s).`);
+}
+if (detailStats.success || detailStats.fallback) {
+    log.info(`Description enrichment: ${detailStats.success} full, ${detailStats.fallback} fallback${detailStats.disabled ? ' (paused after rate limits)' : ''}.`);
 }
 
 log.info(`Run finished. Total records saved: ${totalSaved}.`);
