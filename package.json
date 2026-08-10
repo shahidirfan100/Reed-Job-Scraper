@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "apify": "^3.7.2",
-    "impit": "^0.14.2"
+    "impit": "^0.14.3"
   },
   "devDependencies": {
     "@apify/eslint-config": "^2.0.0",
