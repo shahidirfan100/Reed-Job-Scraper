@@ -7,31 +7,49 @@ await Actor.init();
 
 const input = await Actor.getInput() ?? {};
 const {
-    keyword = '',
-    location = '',
-    posted_date = 'anytime',
-    results_wanted: RESULTS_WANTED_RAW = 20,
-    max_pages: MAX_PAGES_RAW = 50,
+    keyword: keywordRaw = '',
+    location: locationRaw = '',
+    posted_date: postedDateRaw = 'anytime',
+    results_wanted: resultsWantedRaw = 20,
+    max_pages: maxPagesRaw = 50,
     startUrl,
     url,
     startUrls,
-    proxyConfiguration,
 } = input;
 
-const RESULTS_WANTED = Number.isFinite(+RESULTS_WANTED_RAW)
-    ? Math.max(1, +RESULTS_WANTED_RAW)
-    : Number.MAX_SAFE_INTEGER;
-const MAX_PAGES = Number.isFinite(+MAX_PAGES_RAW)
-    ? Math.max(1, +MAX_PAGES_RAW)
-    : 50;
+const normalizeInputString = (value) => typeof value === 'string' ? value.trim() : '';
+const keyword = normalizeInputString(keywordRaw);
+const location = normalizeInputString(locationRaw);
+const postedDate = normalizeInputString(postedDateRaw);
+const VALID_POSTED_DATES = new Set(['anytime', 'today', 'last3days', 'last7days', 'last14days']);
+if (postedDate && !VALID_POSTED_DATES.has(postedDate)) {
+    log.warning(`Unsupported posted_date "${postedDate}". Using "anytime".`);
+}
+const effectivePostedDate = VALID_POSTED_DATES.has(postedDate) ? postedDate : 'anytime';
+
+const toPositiveInteger = (value, fallback) => {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? Math.max(1, Math.floor(numericValue)) : fallback;
+};
+const RESULTS_WANTED = toPositiveInteger(resultsWantedRaw, Number.MAX_SAFE_INTEGER);
+const MAX_PAGES = toPositiveInteger(maxPagesRaw, 50);
 
 const sleep = (ms) => new Promise((resolve) => {
     setTimeout(resolve, ms);
 });
 const randomInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
 const RATE_LIMIT_STATUSES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
+const TEMPORARY_ERROR_CODES = new Set([
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'ETIMEDOUT',
+    'EAI_AGAIN',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_SOCKET',
+]);
 const DETAIL_CONCURRENCY = 2;
 const DETAIL_RATE_LIMIT_DISABLE_THRESHOLD = 3;
+const REQUEST_TIMEOUT_MS = 30000;
 const REED_BFF_URL = 'https://api.reed.co.uk/api-bff-jobseeker-jobs/';
 const BLOCK_PAGE_MARKERS = [
     'cf-chl',
@@ -80,6 +98,23 @@ const buildStartUrl = (kw, loc, date) => {
     return `https://www.reed.co.uk/jobs/${keywordSlug}-jobs-in-${locationSlug}`;
 };
 
+const normalizeUrl = (value) => {
+    const candidate = normalizeInputString(value);
+    if (!candidate) return null;
+
+    try {
+        const parsed = new URL(candidate);
+        if (!['http:', 'https:'].includes(parsed.protocol)) {
+            log.warning('Skipped source URL with an unsupported protocol.');
+            return null;
+        }
+        return parsed.href;
+    } catch {
+        log.warning('Skipped malformed source URL.');
+        return null;
+    }
+};
+
 const normalizeInputUrls = ({ userStartUrls, userStartUrl, userUrl, fallbackUrl }) => {
     const candidates = [];
 
@@ -93,7 +128,7 @@ const normalizeInputUrls = ({ userStartUrls, userStartUrl, userUrl, fallbackUrl 
     if (typeof userUrl === 'string') candidates.push(userUrl);
     if (!candidates.length) candidates.push(fallbackUrl);
 
-    return [...new Set(candidates.map((entry) => entry?.trim()).filter(Boolean))];
+    return [...new Set(candidates.map(normalizeUrl).filter(Boolean))];
 };
 
 const buildPagedUrl = (baseUrl, pageNo) => {
@@ -158,10 +193,32 @@ class PayloadNotFoundError extends Error {
 };
 
 const getErrorStatus = (error) => error?.details?.statusCode ?? error?.status ?? error?.statusCode ?? null;
-const shouldBackoff = (error) => RATE_LIMIT_STATUSES.has(getErrorStatus(error));
+const shouldBackoff = (error) => RATE_LIMIT_STATUSES.has(Number(getErrorStatus(error)));
+const getRetryAfterMs = (response) => {
+    const retryAfter = response?.headers?.get?.('retry-after');
+    if (!retryAfter) return null;
+
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+
+    const retryAt = Date.parse(retryAfter);
+    return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : null;
+};
+const isRetryableError = (error) => {
+    const status = Number(getErrorStatus(error));
+    if (Number.isFinite(status)) {
+        return RATE_LIMIT_STATUSES.has(status) || (status >= 500 && status < 600);
+    }
+    if (error instanceof PayloadNotFoundError) return Boolean(error.details?.blocked);
+    if (TEMPORARY_ERROR_CODES.has(error?.code) || ['AbortError', 'TimeoutError'].includes(error?.name)) return true;
+    return /fetch failed|network|timeout|timed out|socket|connection reset/i.test(error?.message || '');
+};
 const getRetryDelay = ({ attempt, error, baseMs = 900, rateLimitBaseMs = 2500, capMs = 18000 }) => {
+    const retryAfterMs = Number(error?.details?.retryAfterMs);
+    if (Number.isFinite(retryAfterMs) && retryAfterMs >= 0) return Math.min(capMs, retryAfterMs);
+
     const multiplier = shouldBackoff(error) ? rateLimitBaseMs : baseMs;
-    return Math.min(capMs, multiplier * attempt + randomInt(400, 1800));
+    return Math.min(capMs, multiplier * (2 ** (attempt - 1)) + randomInt(400, 1800));
 };
 
 const toAbsoluteJobUrl = (relativeOrAbsoluteUrl) => {
@@ -361,7 +418,7 @@ const fetchJobDetailPayload = async ({ record, client, maxRetries = 2 }) => {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const timeout = AbortSignal.timeout(45000);
+            const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
             const response = await client.fetch(buildDetailApiUrl(record.jobId), {
                 signal: timeout,
                 headers: {
@@ -371,6 +428,15 @@ const fetchJobDetailPayload = async ({ record, client, maxRetries = 2 }) => {
                     referer: record.url || 'https://www.reed.co.uk/jobs',
                 },
             });
+            const statusCode = Number(response?.status);
+            if (!response || !Number.isFinite(statusCode) || statusCode < 200 || statusCode >= 300) {
+                throw new PayloadNotFoundError(`Detail API returned HTTP ${statusCode || 'unknown'}`, {
+                    blocked: RATE_LIMIT_STATUSES.has(statusCode),
+                    statusCode,
+                    retryAfterMs: getRetryAfterMs(response),
+                });
+            }
+
             const text = await response.text();
             const data = parseJsonCandidate(text);
             const payload = data?.result?.jobDetails ?? null;
@@ -390,15 +456,16 @@ const fetchJobDetailPayload = async ({ record, client, maxRetries = 2 }) => {
             return payload;
         } catch (error) {
             lastError = error;
-            if (attempt < maxRetries) {
-                await sleep(getRetryDelay({
-                    attempt,
-                    error,
-                    baseMs: 700,
-                    rateLimitBaseMs: 1800,
-                    capMs: 6000,
-                }));
-            }
+            if (attempt >= maxRetries || !isRetryableError(error)) break;
+
+            const delay = getRetryDelay({
+                attempt,
+                error,
+                baseMs: 700,
+                rateLimitBaseMs: 1800,
+                capMs: 6000,
+            });
+            await sleep(delay);
         }
     }
 
@@ -465,15 +532,23 @@ const mapWithConcurrency = async (items, limit, mapper) => {
     return results;
 };
 
-const fetchPagePayload = async ({ targetUrl, client, pageNo, maxRetries = 6 }) => {
+const fetchPagePayload = async ({ targetUrl, client, pageNo, maxRetries = 4 }) => {
     let lastError = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-            const timeout = AbortSignal.timeout(45000);
+            const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
             const response = await client.fetch(targetUrl, { signal: timeout });
-            const body = await response.text();
+            const statusCode = Number(response?.status);
+            if (!response || !Number.isFinite(statusCode) || statusCode < 200 || statusCode >= 300) {
+                throw new PayloadNotFoundError(`Search page returned HTTP ${statusCode || 'unknown'}`, {
+                    blocked: RATE_LIMIT_STATUSES.has(statusCode),
+                    statusCode,
+                    retryAfterMs: getRetryAfterMs(response),
+                });
+            }
 
+            const body = await response.text();
             const payload = parseStructuredPayload(body);
             if (!payload) {
                 const blocked = isLikelyBlockPage(body);
@@ -489,41 +564,46 @@ const fetchPagePayload = async ({ targetUrl, client, pageNo, maxRetries = 6 }) =
             return payload;
         } catch (error) {
             lastError = error;
-            if (attempt < maxRetries) {
-                const delay = getRetryDelay({ attempt, error });
-                if (attempt === 1 || attempt === maxRetries - 1) {
-                    log.warning(`Search page ${pageNo} temporarily unavailable (${error.message}). Retrying ${attempt + 1}/${maxRetries} in ${Math.round(delay / 1000)}s.`);
-                }
-                await sleep(delay);
+            if (attempt >= maxRetries || !isRetryableError(error)) break;
+
+            const delay = getRetryDelay({ attempt, error });
+            if (attempt === 1 || attempt === maxRetries - 1) {
+                log.warning(`Search page ${pageNo} temporarily unavailable (${error.message}). Retrying ${attempt + 1}/${maxRetries} in ${Math.round(delay / 1000)}s.`);
             }
+            await sleep(delay);
         }
     }
 
     throw lastError ?? new Error('Unknown fetch failure');
 };
 
-const defaultStartUrl = buildStartUrl(keyword, location, posted_date);
+const hasExplicitStartUrl = Boolean(
+    (typeof startUrl === 'string' && startUrl.trim())
+    || (typeof url === 'string' && url.trim())
+    || (Array.isArray(startUrls) && startUrls.some((item) => (
+        (typeof item === 'string' && item.trim())
+        || (item && typeof item.url === 'string' && item.url.trim())
+    )))
+);
+const defaultStartUrl = buildStartUrl(keyword, location, effectivePostedDate);
 const startUrlList = normalizeInputUrls({
     userStartUrls: startUrls,
     userStartUrl: startUrl,
     userUrl: url,
     fallbackUrl: defaultStartUrl,
 });
+if (!startUrlList.length) {
+    throw new Error('No usable Reed source URL was provided.');
+}
 
-const proxyConf = proxyConfiguration
-    ? await Actor.createProxyConfiguration(proxyConfiguration)
-    : undefined;
-const proxyUrl = proxyConf ? await proxyConf.newUrl() : undefined;
+const queryKeyword = hasExplicitStartUrl ? '' : keyword;
+const queryLocation = hasExplicitStartUrl ? '' : location;
+const queryPostedDate = hasExplicitStartUrl ? '' : effectivePostedDate;
+
 const client = new Impit({
     browser: 'chrome',
     ignoreTlsErrors: true,
-    ...(proxyUrl && { proxyUrl }),
 });
-const hasExplicitStartUrl = Boolean(
-    startUrl
-    || url
-    || (Array.isArray(startUrls) && startUrls.length > 0)
-);
 
 if (hasExplicitStartUrl) {
     log.info(`Starting Reed URL scrape with ${startUrlList.length} source URL(s).`);
@@ -573,9 +653,9 @@ for (const sourceUrl of startUrlList) {
                 job,
                 pageNo,
                 totalFound: payload.count,
-                keywordInput: keyword,
-                locationInput: location,
-                postedDateInput: posted_date,
+                keywordInput: queryKeyword,
+                locationInput: queryLocation,
+                postedDateInput: queryPostedDate,
             });
 
             const dedupKey = createDedupKey(record);

@@ -70,11 +70,11 @@ Keyword and location searches are the simplest option. Use `startUrl` when you h
 |-----------|------|----------|---------|-------------|
 | `startUrl` | String | No | None | Public Reed.co.uk search URL. When supplied, the Actor starts from this URL instead of building a search from `keyword` and `location`. |
 | `keyword` | String | No | `administrative assistant` | Job title, skill, or search phrase. |
-| `location` | String | No | `London` | City, region, or other Reed location filter. |
+| `location` | String | No | None | Optional city, region, or other Reed location filter. |
 | `posted_date` | String | No | `anytime` | Posting-date filter: `anytime`, `today`, `last3days`, `last7days`, or `last14days`. |
 | `results_wanted` | Integer | No | `20` | Maximum number of jobs to save. |
 | `max_pages` | Integer | No | `20` | Safety cap on the number of Reed result pages to process. |
-| `proxyConfiguration` | Object | No | `{"useApifyProxy": false}` | Optional Apify Proxy configuration for larger or repeated runs. |
+
 
 ## Output Data
 
@@ -141,24 +141,6 @@ Reuse a public Reed search URL when its search filters are already configured.
 }
 ```
 
-### Larger run with Apify Proxy
-
-Route a repeated or larger collection through Apify Proxy.
-
-```json
-{
-  "keyword": "nurse",
-  "location": "Leeds",
-  "results_wanted": 120,
-  "max_pages": 20,
-  "proxyConfiguration": {
-    "useApifyProxy": true,
-    "apifyProxyGroups": [
-      "RESIDENTIAL"
-    ]
-  }
-}
-```
 
 ## Sample Output
 

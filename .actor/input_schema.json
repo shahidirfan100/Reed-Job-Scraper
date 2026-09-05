@@ -20,8 +20,7 @@
     "location": {
       "title": "Location (if not using Start URL)",
       "type": "string",
-      "description": "Geographic location to search in, e.g., 'London'.",
-      "prefill": "London",
+      "description": "Optional geographic location to search in, e.g., 'London'.",
       "editor": "textfield"
     },
     "posted_date": {
@@ -54,15 +53,6 @@
       "minimum": 1,
       "editor": "number",
       "default": 20
-    },
-    "proxyConfiguration": {
-      "title": "Proxy configuration",
-      "type": "object",
-      "description": "Use Apify Proxy for the best results.",
-      "editor": "proxy",
-      "default": {
-        "useApifyProxy": false
-      }
     }
   },
   "required": [],
