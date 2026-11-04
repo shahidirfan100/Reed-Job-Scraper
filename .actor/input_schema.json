@@ -1,32 +1,33 @@
 {
   "title": "Reed Jobs Scraper",
-  "description": "Scrape jobs from Reed.co.uk listings. Provide keyword/location or a Reed search URL. Actor paginates and collects full job descriptions when available.",
+  "description": "Collect Reed.co.uk job listings by keyword and location, or start from a Reed search URL.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrl": {
       "title": "Start URL",
       "type": "string",
-      "description": "Start scraping from a specific Reed.co.uk search URL. If provided, this will be used instead of Keyword/Location.",
+      "description": "A public Reed.co.uk search or job URL. When supplied, the Actor uses this URL instead of the keyword and location fields.",
       "editor": "textfield"
     },
     "keyword": {
-      "title": "Keyword (if not using Start URL)",
+      "title": "Keyword",
       "type": "string",
-      "description": "Job search keyword(s), e.g., 'Software Developer'.",
+      "description": "Job title, skill, or search phrase, for example \"software engineer\". Clear this field to search by location alone.",
+      "editor": "textfield",
       "prefill": "administrative assistant",
-      "editor": "textfield"
+      "default": "administrative assistant"
     },
     "location": {
-      "title": "Location (if not using Start URL)",
+      "title": "Location",
       "type": "string",
-      "description": "Optional geographic location to search in, e.g., 'London'.",
+      "description": "Optional UK town, city, or region, for example \"London\".",
       "editor": "textfield"
     },
     "posted_date": {
-      "title": "Posted Date (if not using Start URL)",
+      "title": "Posted date",
       "type": "string",
-      "description": "Filter jobs by how recently they were posted.",
+      "description": "Only include jobs posted within this window.",
       "enum": [
         "anytime",
         "today",
@@ -34,25 +35,33 @@
         "last7days",
         "last14days"
       ],
-      "prefill": "anytime",
+      "default": "anytime",
       "editor": "select"
     },
     "results_wanted": {
-      "title": "Maximum number of jobs",
+      "title": "Maximum jobs",
       "type": "integer",
-      "description": "The maximum number of jobs to collect. Leave empty to collect all available jobs.",
+      "description": "Maximum number of jobs to save. Reed exposes at most 10,000 results for one search.",
       "minimum": 1,
-      "prefill": 20,
+      "maximum": 10000,
       "default": 20,
       "editor": "number"
     },
     "max_pages": {
-      "title": "Maximum number of pages",
+      "title": "Maximum pages",
       "type": "integer",
-      "description": "A safety cap on the number of search result pages to visit.",
+      "description": "Safety cap on the number of result pages to read. Each page holds up to 100 jobs.",
       "minimum": 1,
-      "editor": "number",
-      "default": 20
+      "maximum": 100,
+      "default": 20,
+      "editor": "number"
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Optional proxy for larger runs. Leave empty to connect directly.",
+      "default": {},
+      "editor": "proxy"
     }
   },
   "required": [],

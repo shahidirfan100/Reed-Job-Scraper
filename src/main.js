@@ -5,41 +5,41 @@ import { Impit } from 'impit';
 
 await Actor.init();
 
-const input = await Actor.getInput() ?? {};
-const {
-    keyword: keywordRaw = '',
-    location: locationRaw = '',
-    posted_date: postedDateRaw = 'anytime',
-    results_wanted: resultsWantedRaw = 20,
-    max_pages: maxPagesRaw = 50,
-    startUrl,
-    url,
-    startUrls,
-} = input;
+const SITE = 'https://www.reed.co.uk';
+const BFF_URL = 'https://api.reed.co.uk/api-bff-jobseeker-jobs/';
+const DEFAULT_KEYWORD = 'administrative assistant';
+const PAGE_SIZE = 100;
+const MAX_RESULTS = 10_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const DETAIL_TIMEOUT_MS = 12_000;
+const MAX_SEARCH_ATTEMPTS = 4;
+const MAX_DETAIL_ATTEMPTS = 2;
+const DETAIL_CONCURRENCY = 4;
+const DETAIL_FAILURE_LIMIT = 4;
 
-const normalizeInputString = (value) => typeof value === 'string' ? value.trim() : '';
-const keyword = normalizeInputString(keywordRaw);
-const location = normalizeInputString(locationRaw);
-const postedDate = normalizeInputString(postedDateRaw);
-const VALID_POSTED_DATES = new Set(['anytime', 'today', 'last3days', 'last7days', 'last14days']);
-if (postedDate && !VALID_POSTED_DATES.has(postedDate)) {
-    log.warning(`Unsupported posted_date "${postedDate}". Using "anytime".`);
-}
-const effectivePostedDate = VALID_POSTED_DATES.has(postedDate) ? postedDate : 'anytime';
+// Every profile below returned the search page and the detail payload during discovery.
+const BROWSER_PROFILES = ['chrome', 'chrome151', 'chrome142', 'firefox158', 'firefox144', 'okhttp5', 'ios18'];
 
-const toPositiveInteger = (value, fallback) => {
-    const numericValue = Number(value);
-    return Number.isFinite(numericValue) ? Math.max(1, Math.floor(numericValue)) : fallback;
+const POSTED_DATE_PARAMS = {
+    anytime: null,
+    today: 'today',
+    last3days: 'lastthreedays',
+    last7days: 'lastweek',
+    last14days: 'lasttwoweeks',
 };
-const RESULTS_WANTED = toPositiveInteger(resultsWantedRaw, Number.MAX_SAFE_INTEGER);
-const MAX_PAGES = toPositiveInteger(maxPagesRaw, 50);
 
-const sleep = (ms) => new Promise((resolve) => {
-    setTimeout(resolve, ms);
-});
-const randomInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
-const RATE_LIMIT_STATUSES = new Set([403, 408, 425, 429, 500, 502, 503, 504]);
-const TEMPORARY_ERROR_CODES = new Set([
+const CURRENCY_BY_ID = { 1: 'GBP', 2: 'EUR', 3: 'USD' };
+const SALARY_PERIOD_BY_ID = { 1: 'per hour', 2: 'per day', 5: 'per annum' };
+const EMPLOYMENT_TYPE_BY_ID = { 1: 'Permanent', 2: 'Contract', 4: 'Temporary' };
+const CHALLENGE_MARKERS = [
+    'cf-mitigated',
+    '_cf_chl_opt',
+    'just a moment',
+    'access denied',
+    'pardon our interruption',
+    'verify you are human',
+];
+const TEMPORARY_NETWORK_CODES = new Set([
     'ECONNRESET',
     'ECONNREFUSED',
     'ETIMEDOUT',
@@ -47,153 +47,137 @@ const TEMPORARY_ERROR_CODES = new Set([
     'UND_ERR_CONNECT_TIMEOUT',
     'UND_ERR_SOCKET',
 ]);
-const DETAIL_CONCURRENCY = 2;
-const DETAIL_RATE_LIMIT_DISABLE_THRESHOLD = 3;
-const REQUEST_TIMEOUT_MS = 30000;
-const REED_BFF_URL = 'https://api.reed.co.uk/api-bff-jobseeker-jobs/';
-const BLOCK_PAGE_MARKERS = [
-    'cf-chl',
-    'cloudflare',
-    'captcha',
-    'access denied',
-    'just a moment',
-    'verify you are human',
-];
+
+class RequestError extends Error {
+    constructor(message, { status = null, retryAfterMs = null, blocked = false, permanent = false } = {}) {
+        super(message);
+        this.name = 'RequestError';
+        this.status = status;
+        this.retryAfterMs = retryAfterMs;
+        this.blocked = blocked;
+        this.permanent = permanent;
+    }
+}
+
+class PayloadError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'PayloadError';
+    }
+}
+
+const sleep = (ms) => new Promise((resolve) => {
+    setTimeout(resolve, ms);
+});
+
+const randomInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
+
+const normalizeText = (value) => {
+    if (typeof value === 'string') return value.replace(/\s+/g, ' ').trim();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    return '';
+};
+
+const toNumberOrNull = (value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+};
+
+const toInteger = (value, fallback, min, max) => {
+    if (value === null || value === undefined || value === '') return fallback;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.min(max, Math.max(min, Math.floor(number)));
+};
+
+const boolOrNull = (value) => (typeof value === 'boolean' ? value : null);
+
+const decodeCodePoint = (code) => {
+    try {
+        return String.fromCodePoint(code);
+    } catch {
+        return '';
+    }
+};
+
+const decodeEntities = (value) => String(value)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&pound;/gi, '£')
+    .replace(/&#(\d+);/g, (_, code) => decodeCodePoint(Number(code)))
+    .replace(/&#x([\da-f]+);/gi, (_, code) => decodeCodePoint(Number.parseInt(code, 16)));
+
+const stripTags = (html) => decodeEntities(String(html ?? '').replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const htmlToText = (html) => {
+    if (!html || typeof html !== 'string') return '';
+    return decodeEntities(html)
+        .replace(/<\s*br\s*\/?>/gi, '\n')
+        .replace(/<\s*\/\s*(p|div|li|h[1-6]|tr)\s*>/gi, '\n')
+        .replace(/<li[^>]*>/gi, '- ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\n\s+/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+};
+
+const escapeHtml = (value) => value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const textToHtml = (text) => {
+    if (!text) return '';
+    return text
+        .split(/\n{2,}/)
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)
+        .map((chunk) => `<p>${escapeHtml(chunk)}</p>`)
+        .join('');
+};
 
 const sanitizeRecord = (record) => {
     const cleaned = {};
     for (const [key, value] of Object.entries(record)) {
-        if (value !== null && value !== undefined && value !== '') {
-            cleaned[key] = value;
-        }
+        if (value === null || value === undefined || value === '') continue;
+        if (Array.isArray(value) && value.length === 0) continue;
+        cleaned[key] = value;
     }
     return cleaned;
 };
 
-const slugify = (value) => (value ?? '')
-    .toString()
+const slugify = (value) => String(value ?? '')
     .toLowerCase()
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 
-const buildStartUrl = (kw, loc, date) => {
-    if (!kw && !loc) {
-        const target = new URL('https://www.reed.co.uk/jobs');
-        if (date && date !== 'anytime') {
-            if (date === 'today') target.searchParams.set('dateCreatedOffSet', 'today');
-            else if (date === 'last3days') target.searchParams.set('dateCreatedOffSet', 'lastthree');
-            else if (date === 'last7days') target.searchParams.set('dateCreatedOffSet', 'lastseven');
-            else if (date === 'last14days') target.searchParams.set('dateCreatedOffSet', 'lastfourteen');
-            else target.searchParams.set('dateCreatedOffSet', date);
-        }
-        return target.href;
-    }
-
-    const keywordSlug = slugify(kw);
-    const locationSlug = slugify(loc);
-    if (!keywordSlug) return 'https://www.reed.co.uk/jobs';
-    if (!locationSlug) return `https://www.reed.co.uk/jobs/${keywordSlug}-jobs`;
-    return `https://www.reed.co.uk/jobs/${keywordSlug}-jobs-in-${locationSlug}`;
-};
-
-const normalizeUrl = (value) => {
-    const candidate = normalizeInputString(value);
-    if (!candidate) return null;
-
+const parseJson = (value) => {
+    if (typeof value !== 'string') return null;
     try {
-        const parsed = new URL(candidate);
-        if (!['http:', 'https:'].includes(parsed.protocol)) {
-            log.warning('Skipped source URL with an unsupported protocol.');
-            return null;
-        }
-        return parsed.href;
-    } catch {
-        log.warning('Skipped malformed source URL.');
-        return null;
-    }
-};
-
-const normalizeInputUrls = ({ userStartUrls, userStartUrl, userUrl, fallbackUrl }) => {
-    const candidates = [];
-
-    if (Array.isArray(userStartUrls)) {
-        for (const item of userStartUrls) {
-            if (typeof item === 'string') candidates.push(item);
-            else if (item && typeof item.url === 'string') candidates.push(item.url);
-        }
-    }
-    if (typeof userStartUrl === 'string') candidates.push(userStartUrl);
-    if (typeof userUrl === 'string') candidates.push(userUrl);
-    if (!candidates.length) candidates.push(fallbackUrl);
-
-    return [...new Set(candidates.map(normalizeUrl).filter(Boolean))];
-};
-
-const buildPagedUrl = (baseUrl, pageNo) => {
-    const target = new URL(baseUrl);
-    if (pageNo > 1) target.searchParams.set('pageno', String(pageNo));
-    else target.searchParams.delete('pageno');
-    return target.href;
-};
-
-const parseJsonCandidate = (value) => {
-    try {
-        return JSON.parse(value);
+        return JSON.parse(value.replace(/^\uFEFF/, '').trim());
     } catch {
         return null;
     }
 };
 
-const extractSearchResults = (parsed) => {
-    const searchResults = parsed?.props?.pageProps?.searchResults
-        ?? parsed?.pageProps?.searchResults
-        ?? parsed?.searchResults
-        ?? null;
-    if (!searchResults || typeof searchResults !== 'object') return null;
-    return {
-        count: Number(searchResults.count) || null,
-        jobs: Array.isArray(searchResults.jobs) ? searchResults.jobs : [],
-    };
+const isChallengeBody = (body) => {
+    if (!body || typeof body !== 'string') return false;
+    const head = body.slice(0, 20_000).toLowerCase();
+    return CHALLENGE_MARKERS.some((marker) => head.includes(marker));
 };
 
-const parseStructuredPayload = (html) => {
-    if (!html || typeof html !== 'string') return null;
-
-    const candidates = [];
-
-    const nextDataTagMatch = html.match(/<script[^>]*\bid=(["'])__NEXT_DATA__\1[^>]*>([\s\S]*?)<\/script>/i);
-    if (nextDataTagMatch?.[2]) candidates.push(nextDataTagMatch[2]);
-
-    const nextDataAssignmentMatch = html.match(/__NEXT_DATA__\s*=\s*({[\s\S]*?})\s*;?\s*<\/script>/i);
-    if (nextDataAssignmentMatch?.[1]) candidates.push(nextDataAssignmentMatch[1]);
-
-    for (const candidate of candidates) {
-        const parsed = parseJsonCandidate(candidate);
-        const extracted = extractSearchResults(parsed);
-        if (extracted) return extracted;
-    }
-
-    return null;
-};
-
-const isLikelyBlockPage = (html) => {
-    if (!html || typeof html !== 'string') return false;
-    const lowered = html.toLowerCase();
-    return BLOCK_PAGE_MARKERS.some((marker) => lowered.includes(marker));
-};
-
-class PayloadNotFoundError extends Error {
-    constructor(message, details = {}) {
-        super(message);
-        this.name = 'PayloadNotFoundError';
-        this.details = details;
-    }
-};
-
-const getErrorStatus = (error) => error?.details?.statusCode ?? error?.status ?? error?.statusCode ?? null;
-const shouldBackoff = (error) => RATE_LIMIT_STATUSES.has(Number(getErrorStatus(error)));
 const getRetryAfterMs = (response) => {
     const retryAfter = response?.headers?.get?.('retry-after');
     if (!retryAfter) return null;
@@ -204,203 +188,400 @@ const getRetryAfterMs = (response) => {
     const retryAt = Date.parse(retryAfter);
     return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : null;
 };
-const isRetryableError = (error) => {
-    const status = Number(getErrorStatus(error));
-    if (Number.isFinite(status)) {
-        return RATE_LIMIT_STATUSES.has(status) || (status >= 500 && status < 600);
+
+const isRetryable = (error) => {
+    if (error instanceof RequestError) {
+        if (error.permanent) return false;
+        if (error.blocked) return true;
+        if (error.status === null) return true;
+        return error.status === 408 || error.status === 425 || error.status === 429 || error.status >= 500;
     }
-    if (error instanceof PayloadNotFoundError) return Boolean(error.details?.blocked);
-    if (TEMPORARY_ERROR_CODES.has(error?.code) || ['AbortError', 'TimeoutError'].includes(error?.name)) return true;
-    return /fetch failed|network|timeout|timed out|socket|connection reset/i.test(error?.message || '');
-};
-const getRetryDelay = ({ attempt, error, baseMs = 900, rateLimitBaseMs = 2500, capMs = 18000 }) => {
-    const retryAfterMs = Number(error?.details?.retryAfterMs);
-    if (Number.isFinite(retryAfterMs) && retryAfterMs >= 0) return Math.min(capMs, retryAfterMs);
-
-    const multiplier = shouldBackoff(error) ? rateLimitBaseMs : baseMs;
-    return Math.min(capMs, multiplier * (2 ** (attempt - 1)) + randomInt(400, 1800));
+    if (error instanceof PayloadError) return true;
+    if (TEMPORARY_NETWORK_CODES.has(error?.code) || ['AbortError', 'TimeoutError'].includes(error?.name)) return true;
+    return /fetch failed|network|timeout|timed out|socket|connection reset/i.test(error?.message ?? '');
 };
 
-const toAbsoluteJobUrl = (relativeOrAbsoluteUrl) => {
-    if (!relativeOrAbsoluteUrl || typeof relativeOrAbsoluteUrl !== 'string') return null;
-    if (relativeOrAbsoluteUrl.startsWith('http')) return relativeOrAbsoluteUrl;
-    const cleaned = relativeOrAbsoluteUrl.startsWith('/') ? relativeOrAbsoluteUrl : `/${relativeOrAbsoluteUrl}`;
-    if (cleaned.startsWith('/jobs/')) return `https://www.reed.co.uk${cleaned}`;
-    return `https://www.reed.co.uk/jobs${cleaned}`;
+const getRetryDelay = (attempt, error) => {
+    const retryAfterMs = Number(error?.retryAfterMs);
+    if (Number.isFinite(retryAfterMs) && retryAfterMs >= 0) return Math.min(20_000, Math.max(250, retryAfterMs));
+
+    const base = error?.blocked ? 1500 : 700;
+    return Math.min(15_000, base * (2 ** (attempt - 1)) + randomInt(250, 900));
 };
 
-const toAbsoluteProfileUrl = (profileUrl, ouUrl) => {
-    if (ouUrl) return toAbsoluteJobUrl(ouUrl);
-    if (!profileUrl || typeof profileUrl !== 'string') return null;
-    if (profileUrl.startsWith('http')) return profileUrl;
-    if (profileUrl.startsWith('/')) return toAbsoluteJobUrl(profileUrl);
-    return `https://www.reed.co.uk/jobs/${profileUrl}`;
+const describeResponse = (response, body) => {
+    const status = response?.status ?? 'unknown';
+    const contentType = response?.headers?.get?.('content-type') ?? 'unknown';
+    const parsed = parseJson(body);
+    let jsonSummary = 'none';
+    if (parsed && typeof parsed === 'object') {
+        const keys = Object.keys(parsed).slice(0, 8).join(',');
+        const errorCode = normalizeText(parsed.errorCode);
+        const message = normalizeText(parsed.message).slice(0, 160);
+        jsonSummary = `keys=${keys}${errorCode ? `, errorCode=${errorCode}` : ''}${message ? `, message=${message}` : ''}`;
+    }
+    return `status=${status}, content-type=${contentType}, bytes=${body?.length ?? 0}, challenge=${isChallengeBody(body)}, json=${jsonSummary}`;
 };
 
-const toAbsoluteLogoUrl = (logoValue) => {
-    if (!logoValue || typeof logoValue !== 'string') return null;
-    if (logoValue.startsWith('http')) return logoValue;
-    if (logoValue.startsWith('/')) return `https://resources.reed.co.uk${logoValue}`;
-    return `https://resources.reed.co.uk/profileimages/logos/thumbs/${logoValue}`;
+const safeText = async (response) => {
+    try {
+        return await response.text();
+    } catch {
+        return '';
+    }
 };
 
-const getEmploymentType = (jobTypeCode) => {
-    const map = {
-        1: 'Permanent',
-        2: 'Contract',
-        3: 'Temporary',
-        4: 'Part Time',
-    };
-    return map[jobTypeCode] || null;
-};
+const formatError = (error) => String(error?.message ?? error).replace(/\s+/g, ' ').trim().slice(0, 300);
 
-const getCurrency = (salaryCurrencyId) => {
-    const map = {
-        1: 'GBP',
-        2: 'EUR',
-        3: 'USD',
-    };
-    return map[salaryCurrencyId] || null;
-};
+const extractBalancedJson = (text, startIndex) => {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
 
-const formatSalary = (detail) => {
-    if (detail.salaryDescription) return detail.salaryDescription;
-    if (detail.salaryFrom && detail.salaryTo) return `£${detail.salaryFrom.toLocaleString()} - £${detail.salaryTo.toLocaleString()}`;
-    if (detail.salaryFrom) return `£${detail.salaryFrom.toLocaleString()}`;
-    if (detail.salaryTo) return `Up to £${detail.salaryTo.toLocaleString()}`;
-    return null;
-};
-
-const textToHtml = (text) => {
-    if (!text) return '';
-    return text
-        .split(/\n{2,}/)
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)
-        .map((chunk) => `<p>${chunk}</p>`)
-        .join('');
-};
-
-const decodeHtmlEntities = (value) => value
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&pound;/gi, '£')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([\da-f]+);/gi, (_, code) => String.fromCodePoint(Number.parseInt(code, 16)));
-
-const htmlToText = (html) => {
-    if (!html || typeof html !== 'string') return '';
-    return decodeHtmlEntities(html)
-        .replace(/<\s*br\s*\/?>/gi, '\n')
-        .replace(/<\/\s*(p|div|li|h[1-6]|tr)\s*>/gi, '\n')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/[ \t]+/g, ' ')
-        .replace(/\n\s+/g, '\n')
-        .replace(/\n{3,}/g, '\n\n')
-        .trim();
-};
-
-const extractScalarFields = (source, prefix = '') => {
-    const out = {};
-    if (!source || typeof source !== 'object') return out;
-
-    for (const [key, value] of Object.entries(source)) {
-        if (value === null || value === undefined || value === '') continue;
-
-        const fieldName = `${prefix}${key}`;
-        if (Array.isArray(value)) {
-            if (value.length && value.every((entry) => typeof entry !== 'object')) {
-                out[fieldName] = value;
-            }
+    for (let index = startIndex; index < text.length; index++) {
+        const character = text[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (character === '\\') escaped = true;
+            else if (character === '"') inString = false;
             continue;
         }
 
-        if (typeof value === 'object') continue;
-        out[fieldName] = value;
+        if (character === '"') inString = true;
+        else if (character === '{') depth++;
+        else if (character === '}') {
+            depth--;
+            if (depth === 0) return text.slice(startIndex, index + 1);
+        }
     }
 
-    return out;
-};
-
-const createRecord = ({ job, pageNo, totalFound, keywordInput, locationInput, postedDateInput }) => {
-    const detail = job?.jobDetail ?? {};
-    const employerUrl = toAbsoluteProfileUrl(job?.profileUrl, job?.ouUrl);
-    const logoUrl = toAbsoluteLogoUrl(job?.logoImage);
-
-    const core = {
-        url: toAbsoluteJobUrl(job?.url),
-        jobId: detail.jobId ? String(detail.jobId) : null,
-        title: detail.jobTitle || null,
-        company: detail.ouName || job?.profileName || null,
-        employerId: job?.profileUrl || null,
-        employerUrl,
-        logoUrl,
-        location: detail.displayLocationName || null,
-        countyLocation: detail.countyLocation || null,
-        salary: formatSalary(detail),
-        salaryMin: detail.salaryFrom ?? null,
-        salaryMax: detail.salaryTo ?? null,
-        currency: getCurrency(detail.salaryCurrencyId) || 'GBP',
-        salaryType: detail.salaryType || null,
-        datePosted: detail.dateCreated || detail.dateUpdated || null,
-        dateUpdated: detail.dateUpdated || null,
-        validThrough: detail.expiryDate || null,
-        employmentType: getEmploymentType(detail.jobType),
-        isFullTime: detail.isFullTime ?? null,
-        isPartTime: detail.isPartTime ?? null,
-        isFeatured: Boolean(detail.featuredLabel),
-        isPromoted: detail.isPromoted ?? null,
-        isTopJob: detail.isTopJob ?? null,
-        isPriority: detail.isPriority ?? null,
-        isTrainingJob: detail.isTrainingJob ?? null,
-        isEarlyBird: detail.isEarlyBird ?? null,
-        isEasyApply: detail.isEasyApply ?? null,
-        remoteWorkingOption: detail.remoteWorkingOption || null,
-        taxonomyLevel1: detail.taxonomyLevel1 || null,
-        taxonomyLevel2: detail.taxonomyLevel2 || null,
-        description_text: detail.jobDescription || null,
-        description_html: textToHtml(detail.jobDescription || ''),
-        page: pageNo,
-        totalAvailableForSearch: totalFound,
-        queryKeyword: keywordInput || null,
-        queryLocation: locationInput || null,
-        postedDateFilter: postedDateInput || null,
-        _source: 'reed.co.uk',
-        _fetchedAt: new Date().toISOString(),
-    };
-
-    const jobTopLevel = { ...job };
-    delete jobTopLevel.jobDetail;
-
-    const dynamicFields = {
-        ...extractScalarFields(detail),
-        ...extractScalarFields(jobTopLevel, 'job_'),
-    };
-
-    if (dynamicFields.job_url) dynamicFields.job_url = toAbsoluteJobUrl(dynamicFields.job_url);
-    if (dynamicFields.job_ouUrl) dynamicFields.job_ouUrl = toAbsoluteJobUrl(dynamicFields.job_ouUrl);
-    if (dynamicFields.job_profileUrl) {
-        dynamicFields.job_profileUrl = toAbsoluteProfileUrl(dynamicFields.job_profileUrl, dynamicFields.job_ouUrl);
-    }
-    if (dynamicFields.job_logoImage) dynamicFields.job_logoImage = toAbsoluteLogoUrl(dynamicFields.job_logoImage);
-
-    return sanitizeRecord({ ...dynamicFields, ...core });
-};
-
-const createDedupKey = (record) => {
-    if (record.jobId) return `jobId:${record.jobId}`;
-    if (record.url) return `url:${record.url}`;
-    if (record.title || record.company || record.location) {
-        return `fallback:${record.title || ''}|${record.company || ''}|${record.location || ''}|${record.datePosted || ''}`;
-    }
     return null;
 };
 
-const buildDetailApiUrl = (jobId) => {
+const parseNextData = (html) => {
+    if (!html || typeof html !== 'string') return null;
+
+    const tagMatch = html.match(/<script[^>]*\bid=(["'])__NEXT_DATA__\1[^>]*>([\s\S]*?)<\/script>/i);
+    if (tagMatch?.[2]) {
+        const parsed = parseJson(tagMatch[2]);
+        if (parsed) return parsed;
+    }
+
+    const assignmentMatch = html.match(/__NEXT_DATA__\s*=\s*\{/);
+    if (assignmentMatch) {
+        const startIndex = assignmentMatch.index + assignmentMatch[0].length - 1;
+        const json = extractBalancedJson(html, startIndex);
+        const parsed = parseJson(json);
+        if (parsed) return parsed;
+    }
+
+    return null;
+};
+
+const extractTextNearMarker = (html, marker, windowSize = 700) => {
+    const index = html.indexOf(`data-qa="${marker}"`);
+    if (index === -1) return '';
+
+    const window = html.slice(index, index + windowSize);
+    const nextMarkerIndex = window.indexOf('data-qa=', 10);
+    return stripTags(nextMarkerIndex === -1 ? window : window.slice(0, nextMarkerIndex));
+};
+
+const parseCardsFromHtml = (html) => {
+    if (!html || typeof html !== 'string') return [];
+
+    const cards = [];
+    const cardPattern = /<article\b[^>]*data-qa="job-card"[^>]*>[\s\S]*?<\/article>/gi;
+
+    for (const match of html.matchAll(cardPattern)) {
+        const article = match[0];
+        const idMatch = article.match(/data-id="job(\d+)"/i) ?? article.match(/\/jobs\/[^"?]+\/(\d{5,})/i);
+        const anchorTag = article.match(/<a\b[^>]*data-qa="job-card-title"[^>]*>/i)?.[0] ?? '';
+        const href = anchorTag.match(/href="([^"]+)"/i)?.[1] ?? '';
+        const titleHtml = article.match(/<a\b[^>]*data-qa="job-card-title"[^>]*>([\s\S]*?)<\/a>/i)?.[1];
+        const title = stripTags(titleHtml) || anchorTag.match(/title="([^"]*)"/i)?.[1] || '';
+        const postedBy = extractTextNearMarker(article, 'job-posted-by').replace(/^posted by\s+/i, '');
+        const salary = extractTextNearMarker(article, 'job-metadata-salary');
+        const location = extractTextNearMarker(article, 'job-metadata-location');
+
+        if (!href && !idMatch?.[1]) continue;
+
+        cards.push({
+            url: href,
+            profileName: postedBy,
+            jobDetail: {
+                jobId: idMatch?.[1] ? Number(idMatch[1]) : null,
+                jobTitle: title,
+                ouName: postedBy,
+                displayLocationName: location,
+                salaryDescription: salary,
+            },
+        });
+    }
+
+    return cards;
+};
+
+const extractSearchPayload = (html) => {
+    const data = parseNextData(html);
+    const pageProps = data?.props?.pageProps ?? data?.pageProps ?? null;
+
+    if (pageProps?.notFoundReason) {
+        return { jobs: [], count: 0, source: 'not-found', notFoundReason: pageProps.notFoundReason };
+    }
+
+    const searchResults = pageProps?.searchResults ?? data?.searchResults ?? null;
+    if (searchResults && typeof searchResults === 'object') {
+        let jobs = [];
+        if (Array.isArray(searchResults.jobs)) jobs = searchResults.jobs;
+        else if (Array.isArray(searchResults.results)) jobs = searchResults.results;
+
+        return {
+            jobs,
+            count: toNumberOrNull(searchResults.count),
+            source: 'next-data',
+        };
+    }
+
+    const cards = parseCardsFromHtml(html);
+    if (cards.length) return { jobs: cards, count: null, source: 'html-cards' };
+
+    return null;
+};
+
+const buildSearchUrl = ({ keyword, location, postedDate, page }) => {
+    const keywordSlug = slugify(keyword);
+    const locationSlug = slugify(location);
+    let path = '/jobs';
+
+    if (keywordSlug && locationSlug) path = `/jobs/${keywordSlug}-jobs-in-${locationSlug}`;
+    else if (keywordSlug) path = `/jobs/${keywordSlug}-jobs`;
+    else if (locationSlug) path = `/jobs/jobs-in-${locationSlug}`;
+
+    const url = new URL(path, SITE);
+    if (keyword) url.searchParams.set('keywords', keyword);
+    if (location) url.searchParams.set('locationName', location);
+
+    const dateParam = POSTED_DATE_PARAMS[postedDate];
+    if (dateParam) url.searchParams.set('datecreatedoffset', dateParam);
+
+    url.searchParams.set('take', String(PAGE_SIZE));
+    if (page > 1) url.searchParams.set('pageno', String(page));
+    return url.href;
+};
+
+const prepareSearchUrl = (sourceUrl, page) => {
+    const url = new URL(sourceUrl, SITE);
+    url.searchParams.set('take', String(PAGE_SIZE));
+    if (page > 1) url.searchParams.set('pageno', String(page));
+    else url.searchParams.delete('pageno');
+    return url.href;
+};
+
+const extractJobId = (value) => {
+    try {
+        const { pathname } = new URL(value, SITE);
+        if (/\/p\d+\/?$/.test(pathname)) return null;
+        const match = pathname.match(/^\/jobs\/(?:job\/)?(\d{5,})\/?$/)
+            ?? pathname.match(/^\/jobs\/[^/]+\/(\d{5,})\/?$/);
+        return match?.[1] ?? null;
+    } catch {
+        return null;
+    }
+};
+
+const toJobUrl = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    try {
+        const url = new URL(value, SITE);
+        if (url.hostname !== 'www.reed.co.uk') return null;
+        url.search = '';
+        url.hash = '';
+        return url.href;
+    } catch {
+        return null;
+    }
+};
+
+const toEmployerUrl = (ouUrl, profileUrl, profileId) => {
+    if (ouUrl) {
+        const normalized = toJobUrl(ouUrl);
+        if (normalized) return normalized;
+    }
+    const slug = slugify(profileUrl);
+    if (slug && profileId) return `${SITE}/jobs/${slug}/p${profileId}`;
+    return null;
+};
+
+const toLogoUrl = (value) => {
+    if (!value || typeof value !== 'string') return null;
+    if (value.startsWith('http')) return value;
+    if (value.startsWith('/')) return `https://resources.reed.co.uk${value}`;
+    return `https://resources.reed.co.uk/profileimages/logos/thumbs/${value}`;
+};
+
+const normalizeWorkingOption = (value) => {
+    const normalized = String(value ?? '').toLowerCase().replace(/[\s_-]+/g, '');
+    if (!normalized) return null;
+    if (normalized.includes('remote')) return 'Remote';
+    if (normalized.includes('hybrid')) return 'Hybrid';
+    if (normalized.includes('onsite')) return 'On-site';
+    return null;
+};
+
+const formatSalary = (from, to, period) => {
+    if (from === null && to === null) return null;
+    const suffix = period ? ` ${period}` : '';
+    if (from !== null && to !== null) return `£${from.toLocaleString('en-GB')} - £${to.toLocaleString('en-GB')}${suffix}`;
+    if (from !== null) return `£${from.toLocaleString('en-GB')}${suffix}`;
+    return `Up to £${to.toLocaleString('en-GB')}${suffix}`;
+};
+
+const createBaseRecord = ({ job, page, total, context }) => {
+    const card = job?.jobDetail ?? {};
+    const jobId = card.jobId ? String(card.jobId) : extractJobId(job?.url);
+    const url = toJobUrl(job?.url) ?? (jobId ? `${SITE}/jobs/job/${jobId}` : null);
+    const salaryFrom = toNumberOrNull(card.salaryFrom);
+    const salaryTo = toNumberOrNull(card.salaryTo);
+    const salaryPeriod = SALARY_PERIOD_BY_ID[card.salaryType] ?? null;
+    const snippet = normalizeText(card.jobDescriptionSnippet);
+
+    return sanitizeRecord({
+        url,
+        jobId,
+        title: normalizeText(card.jobTitle) || null,
+        company: normalizeText(card.ouName) || normalizeText(job?.profileName) || null,
+        employerId: card.profileId ? String(card.profileId) : normalizeText(job?.profileUrl) || null,
+        employerUrl: toEmployerUrl(job?.ouUrl, job?.profileUrl, card.profileId),
+        logoUrl: toLogoUrl(job?.logoImage),
+        location: normalizeText(card.displayLocationName) || null,
+        countyLocation: normalizeText(card.countyLocation) || null,
+        salary: normalizeText(card.salaryDescription) || formatSalary(salaryFrom, salaryTo, salaryPeriod),
+        salaryMin: salaryFrom,
+        salaryMax: salaryTo,
+        salaryPeriod,
+        salaryType: salaryPeriod,
+        currency: CURRENCY_BY_ID[card.salaryCurrencyId] ?? 'GBP',
+        datePosted: card.dateCreated || card.displayDate || null,
+        dateUpdated: card.dateUpdated || null,
+        validThrough: card.expiryDate || null,
+        employmentType: EMPLOYMENT_TYPE_BY_ID[card.jobType] ?? null,
+        isFullTime: boolOrNull(card.isFullTime),
+        isPartTime: boolOrNull(card.isPartTime),
+        isFeatured: boolOrNull(card.featuredLabel),
+        isPromoted: boolOrNull(card.isPromoted),
+        isPriority: boolOrNull(card.isPriority),
+        isTopJob: boolOrNull(card.isTopJob),
+        isTrainingJob: boolOrNull(card.isTrainingJob),
+        isEasyApply: boolOrNull(card.isEasyApply),
+        remoteWorkingOption: normalizeWorkingOption(card.workingOption),
+        taxonomyLevel1: normalizeText(card.taxonomyLevel1) || null,
+        taxonomyLevel2: normalizeText(card.taxonomyLevel2) || null,
+        description_text: snippet || null,
+        description_html: snippet ? textToHtml(snippet) : null,
+        page,
+        totalAvailableForSearch: total ?? null,
+        queryKeyword: context.keyword || null,
+        queryLocation: context.location || null,
+        postedDateFilter: context.postedDate || null,
+        _source: 'reed.co.uk',
+        _fetchedAt: new Date().toISOString(),
+    });
+};
+
+const mergeDetail = (base, detail) => {
+    const location = detail?.jobLocation ?? {};
+    const salary = detail?.jobSalary ?? {};
+    const owner = detail?.jobOwner ?? {};
+    const contract = detail?.jobContractType ?? {};
+    const hours = detail?.jobEmploymentHours ?? {};
+    const sector = detail?.jobSector ?? {};
+    const descriptionHtml = typeof detail?.description === 'string' ? detail.description.trim() : '';
+    const skills = Array.isArray(detail?.jobSkills)
+        ? detail.jobSkills.map((skill) => normalizeText(skill?.name)).filter(Boolean)
+        : [];
+    const breadcrumbs = Array.isArray(detail?.breadcrumbs)
+        ? detail.breadcrumbs.map((crumb) => normalizeText(crumb)).filter(Boolean)
+        : [];
+
+    return sanitizeRecord({
+        ...base,
+        title: normalizeText(detail?.title) || base.title,
+        company: normalizeText(owner.profileName) || normalizeText(owner.ouName) || base.company,
+        employerId: owner.profileId ? String(owner.profileId) : base.employerId,
+        employerUrl: toEmployerUrl(null, owner.profileUrl, owner.profileId) ?? base.employerUrl,
+        companyProfileUrl: owner.companyProfileUrl ? `${SITE}/company-profile/${owner.companyProfileUrl}` : base.companyProfileUrl,
+        logoUrl: toLogoUrl(owner.profileLogoImage) ?? toLogoUrl(owner.ouLogoImage) ?? base.logoUrl,
+        location: normalizeText(location.locationName) || base.location,
+        town: normalizeText(location.townName) || base.town,
+        countyLocation: normalizeText(location.countyName) || base.countyLocation,
+        region: normalizeText(location.regionName) || base.region,
+        country: normalizeText(location.countryName) || base.country,
+        countryCode: normalizeText(location.countryCode) || base.countryCode,
+        postcode: normalizeText(location.postCode) || base.postcode,
+        isRemote: boolOrNull(location.isRemoteJob) ?? base.isRemote,
+        salary: normalizeText(salary.displaySalary) || base.salary,
+        salaryMin: toNumberOrNull(salary.from) ?? base.salaryMin,
+        salaryMax: toNumberOrNull(salary.to) ?? base.salaryMax,
+        salaryPeriod: normalizeText(salary.type?.name) || base.salaryPeriod,
+        salaryAnnualMin: toNumberOrNull(salary.fromPerAnnum) ?? base.salaryAnnualMin,
+        salaryAnnualMax: toNumberOrNull(salary.toPerAnnum) ?? base.salaryAnnualMax,
+        isSalaryNegotiable: boolOrNull(salary.isNegotiable) ?? base.isSalaryNegotiable,
+        currency: CURRENCY_BY_ID[salary.currencyId] ?? base.currency,
+        salaryType: normalizeText(salary.type?.name) || base.salaryType,
+        datePosted: detail?.createdDate || base.datePosted,
+        dateUpdated: detail?.updatedDate || base.dateUpdated,
+        validThrough: detail?.expiryDate || base.validThrough,
+        employmentType: normalizeText(contract.name) || base.employmentType,
+        isFullTime: boolOrNull(hours.isFullTime) ?? base.isFullTime,
+        isPartTime: boolOrNull(hours.isPartTime) ?? base.isPartTime,
+        isPermanent: boolOrNull(detail?.isPermanent) ?? base.isPermanent,
+        isContract: boolOrNull(detail?.isContract) ?? base.isContract,
+        isTemporary: boolOrNull(detail?.isTemp) ?? base.isTemporary,
+        isAgency: boolOrNull(detail?.isAgency) ?? base.isAgency,
+        isEmployer: boolOrNull(detail?.isEmployer) ?? base.isEmployer,
+        isReed: boolOrNull(detail?.isReed) ?? base.isReed,
+        isGraduate: boolOrNull(detail?.isGraduate) ?? base.isGraduate,
+        isEasyApply: boolOrNull(detail?.isEasyApply) ?? base.isEasyApply,
+        isFeatured: boolOrNull(detail?.isFeatured) ?? base.isFeatured,
+        isPromoted: boolOrNull(detail?.isPromoted) ?? base.isPromoted,
+        isTrainingJob: boolOrNull(detail?.isTrainingJob) ?? base.isTrainingJob,
+        requiresUkEligibility: boolOrNull(detail?.hasEligibilityToWorkInUk) ?? base.requiresUkEligibility,
+        eligibilityRequirement: normalizeText(detail?.jobApplicationEligibilityRequirement) || base.eligibilityRequirement,
+        remoteWorkingOption: normalizeWorkingOption(location.inferredJobLocationType)
+            ?? normalizeWorkingOption(location.workingOption)
+            ?? base.remoteWorkingOption,
+        skills: skills.length ? skills : base.skills,
+        sector: normalizeText(sector.name) || base.sector,
+        sectorId: toNumberOrNull(sector.id) ?? base.sectorId,
+        sectorParent: normalizeText(sector.parentName) || base.sectorParent,
+        taxonomy: normalizeText(detail?.taxonomy) || base.taxonomy,
+        breadcrumbs: breadcrumbs.length ? breadcrumbs : base.breadcrumbs,
+        taxonomyLevel1: breadcrumbs[1] || base.taxonomyLevel1,
+        taxonomyLevel2: breadcrumbs[2] || base.taxonomyLevel2,
+        description_html: descriptionHtml || base.description_html,
+        description_text: htmlToText(descriptionHtml) || base.description_text,
+    });
+};
+
+const createDetailRecord = (detail, context, sourceUrl) => {
+    const jobId = detail?.id ? String(detail.id) : null;
+    const url = toJobUrl(sourceUrl) ?? (jobId ? `${SITE}/jobs/job/${jobId}` : null);
+    const base = sanitizeRecord({
+        url,
+        jobId,
+        page: 1,
+        totalAvailableForSearch: 1,
+        queryKeyword: context.keyword || null,
+        queryLocation: context.location || null,
+        postedDateFilter: context.postedDate || null,
+        _source: 'reed.co.uk',
+        _fetchedAt: new Date().toISOString(),
+    });
+    return mergeDetail(base, detail);
+};
+
+const buildDetailUrl = (jobId) => {
     const params = new URLSearchParams({
         includeGaTags: 'false',
         includeProfileDetails: 'false',
@@ -410,110 +591,254 @@ const buildDetailApiUrl = (jobId) => {
         includeHiddenJobs: 'false',
         shortlistedJobsCount: '0',
     });
-    return `${REED_BFF_URL}job/consolidated/${encodeURIComponent(jobId)}/anonymous/?${params}`;
+    return `${BFF_URL}job/consolidated/${encodeURIComponent(jobId)}/anonymous/?${params}`;
 };
 
-const fetchJobDetailPayload = async ({ record, client, maxRetries = 2 }) => {
+const buildDetailHeaders = (jobUrl) => ({
+    accept: 'application/json, text/plain, */*',
+    'x-correlation-id': crypto.randomUUID(),
+    'x-correlation-source-id': 'web-jobseeker-jobs',
+    origin: SITE,
+    referer: jobUrl || `${SITE}/jobs`,
+});
+
+const rawInput = (await Actor.getInput()) ?? {};
+const keywordInput = normalizeText(rawInput.keyword);
+const locationInput = normalizeText(rawInput.location);
+const postedDateInput = normalizeText(rawInput.posted_date) || 'anytime';
+const maxPagesInput = toInteger(rawInput.max_pages, 20, 1, MAX_RESULTS / PAGE_SIZE);
+
+const postedDate = Object.hasOwn(POSTED_DATE_PARAMS, postedDateInput) ? postedDateInput : 'anytime';
+if (postedDateInput !== postedDate) {
+    log.warning(`Unsupported posted_date "${postedDateInput}". Using "anytime".`);
+}
+
+const requestedResults = toInteger(rawInput.results_wanted, 20, 1, Number.MAX_SAFE_INTEGER);
+const resultsWanted = Math.min(requestedResults, MAX_RESULTS);
+if (requestedResults > MAX_RESULTS) {
+    log.warning(`Reed exposes at most ${MAX_RESULTS} results for a search. Capping results_wanted at ${MAX_RESULTS}.`);
+}
+
+const startUrlCandidates = [];
+const rawStartUrls = Array.isArray(rawInput.startUrls) ? rawInput.startUrls : [];
+for (const item of rawStartUrls) {
+    if (typeof item === 'string') startUrlCandidates.push(item);
+    else if (item && typeof item.url === 'string') startUrlCandidates.push(item.url);
+}
+if (typeof rawInput.startUrl === 'string') startUrlCandidates.push(rawInput.startUrl);
+if (typeof rawInput.url === 'string') startUrlCandidates.push(rawInput.url);
+
+const normalizeSourceUrl = (value) => {
+    const candidate = normalizeText(value);
+    if (!candidate) return null;
+
+    try {
+        const url = new URL(candidate);
+        if (!['http:', 'https:'].includes(url.protocol)) return null;
+        if (url.hostname === 'reed.co.uk') url.hostname = 'www.reed.co.uk';
+        if (url.hostname !== 'www.reed.co.uk') {
+            log.warning('Skipped a source URL outside www.reed.co.uk.');
+            return null;
+        }
+        url.hash = '';
+        return url.href;
+    } catch {
+        log.warning('Skipped a malformed source URL.');
+        return null;
+    }
+};
+
+const sourceUrls = [...new Set(startUrlCandidates.map(normalizeSourceUrl).filter(Boolean))];
+const hasExplicitSource = sourceUrls.length > 0;
+const explicitKeyword = hasExplicitSource ? '' : keywordInput;
+const explicitLocation = hasExplicitSource ? '' : locationInput;
+
+let searchKeyword = explicitKeyword;
+if (!hasExplicitSource && !explicitKeyword && !explicitLocation) searchKeyword = DEFAULT_KEYWORD;
+
+const searchContext = {
+    keyword: explicitKeyword || (hasExplicitSource ? '' : searchKeyword),
+    location: explicitLocation,
+    postedDate: hasExplicitSource ? '' : postedDate,
+};
+
+const proxyInput = rawInput.proxyConfiguration;
+const proxyRequested = Boolean(proxyInput) && (
+    proxyInput.useApifyProxy === true
+    || (Array.isArray(proxyInput.proxyUrls) && proxyInput.proxyUrls.length > 0)
+);
+const proxyConfiguration = proxyRequested ? await Actor.createProxyConfiguration(proxyInput) : null;
+
+const clientCache = new Map();
+const unusableProfiles = new Set();
+let activeProfileIndex = 0;
+
+const createClient = async (profile) => {
+    const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+    return new Impit({
+        browser: profile,
+        ...(proxyUrl ? { proxyUrl } : {}),
+    });
+};
+
+const getClient = async () => {
+    for (let offset = 0; offset < BROWSER_PROFILES.length; offset++) {
+        const profile = BROWSER_PROFILES[(activeProfileIndex + offset) % BROWSER_PROFILES.length];
+        if (unusableProfiles.has(profile)) continue;
+        if (!clientCache.has(profile)) {
+            try {
+                clientCache.set(profile, await createClient(profile));
+            } catch (error) {
+                unusableProfiles.add(profile);
+                log.warning(`Could not initialize the ${profile} request profile: ${formatError(error)}`);
+                continue;
+            }
+        }
+        return clientCache.get(profile);
+    }
+    throw new Error('No impit browser profile could be initialized.');
+};
+
+const rotateProfile = () => {
+    const blockedProfile = BROWSER_PROFILES[activeProfileIndex];
+    clientCache.delete(blockedProfile);
+    activeProfileIndex = (activeProfileIndex + 1) % BROWSER_PROFILES.length;
+    log.warning(`Switching from ${blockedProfile} to ${BROWSER_PROFILES[activeProfileIndex]} after a block.`);
+};
+
+const runWithRetries = async ({ label, attempts, operation }) => {
     let lastError = null;
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
         try {
-            const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-            const response = await client.fetch(buildDetailApiUrl(record.jobId), {
-                signal: timeout,
-                headers: {
-                    'x-correlation-id': crypto.randomUUID(),
-                    'x-correlation-source-id': 'web-jobseeker-jobs',
-                    origin: 'https://www.reed.co.uk',
-                    referer: record.url || 'https://www.reed.co.uk/jobs',
-                },
-            });
-            const statusCode = Number(response?.status);
-            if (!response || !Number.isFinite(statusCode) || statusCode < 200 || statusCode >= 300) {
-                throw new PayloadNotFoundError(`Detail API returned HTTP ${statusCode || 'unknown'}`, {
-                    blocked: RATE_LIMIT_STATUSES.has(statusCode),
-                    statusCode,
-                    retryAfterMs: getRetryAfterMs(response),
-                });
-            }
-
-            const text = await response.text();
-            const data = parseJsonCandidate(text);
-            const payload = data?.result?.jobDetails ?? null;
-
-            if (!payload) {
-                const blocked = isLikelyBlockPage(text);
-                const message = blocked
-                    ? `Detail API payload not found: likely anti-bot response (status ${response.status})`
-                    : `Detail API payload not found (status ${response.status})`;
-                throw new PayloadNotFoundError(message, {
-                    blocked,
-                    statusCode: response.status,
-                    bodyLength: text.length,
-                });
-            }
-
-            return payload;
+            const client = await getClient();
+            return await operation(client, attempt);
         } catch (error) {
             lastError = error;
-            if (attempt >= maxRetries || !isRetryableError(error)) break;
-
-            const delay = getRetryDelay({
-                attempt,
-                error,
-                baseMs: 700,
-                rateLimitBaseMs: 1800,
-                capMs: 6000,
-            });
+            if (!isRetryable(error) || attempt >= attempts) break;
+            if (error instanceof RequestError && error.blocked) rotateProfile();
+            const delay = getRetryDelay(attempt, error);
+            log.warning(`${label}: ${formatError(error)}. Retrying in ${(delay / 1000).toFixed(1)}s (${attempt}/${attempts}).`);
             await sleep(delay);
         }
     }
 
-    throw lastError ?? new Error('Unknown detail fetch failure');
+    throw lastError ?? new Error(`${label} failed without a captured error.`);
 };
 
 const detailStats = {
     success: 0,
-    fallback: 0,
-    rateLimited: 0,
+    pageFallback: 0,
+    snippetFallback: 0,
+    gone: 0,
+    consecutiveFailures: 0,
     disabled: false,
 };
 
-const enrichRecordWithDetail = async ({ record, client }) => {
-    if (!record.jobId || detailStats.disabled) {
-        detailStats.fallback++;
-        return sanitizeRecord({
-            ...record,
-            description_text: record.description_text || record.jobDescriptionSnippet,
-            description_html: record.description_html || textToHtml(record.jobDescriptionSnippet || ''),
-        });
-    }
+const fetchSearchPage = async (url) => runWithRetries({
+    label: `Search page ${url}`,
+    attempts: MAX_SEARCH_ATTEMPTS,
+    operation: async (client) => {
+        const response = await client.fetch(url, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+        const status = Number(response.status);
+        const body = await safeText(response);
 
-    try {
-        await sleep(randomInt(220, 680));
-        const detail = await fetchJobDetailPayload({ record, client });
-        const descriptionHtml = typeof detail.description === 'string' ? detail.description.trim() : '';
-        const descriptionText = htmlToText(descriptionHtml);
-        detailStats.success++;
-
-        return sanitizeRecord({
-            ...record,
-            description_text: descriptionText || record.description_text || record.jobDescriptionSnippet,
-            description_html: descriptionHtml || record.description_html || textToHtml(record.jobDescriptionSnippet || ''),
-        });
-    } catch (error) {
-        detailStats.fallback++;
-        if (getErrorStatus(error) === 429) {
-            detailStats.rateLimited++;
-            if (detailStats.rateLimited >= DETAIL_RATE_LIMIT_DISABLE_THRESHOLD) {
-                detailStats.disabled = true;
-            }
+        if (status === 404 || status === 410) {
+            const payload = extractSearchPayload(body);
+            if (payload) return payload;
+            throw new RequestError(`Search page returned HTTP ${status}`, { status, permanent: true });
         }
-        return sanitizeRecord({
-            ...record,
-            description_text: record.description_text || record.jobDescriptionSnippet,
-            description_html: record.description_html || textToHtml(record.jobDescriptionSnippet || ''),
+
+        if (!response.ok) {
+            throw new RequestError(`Search page returned HTTP ${status} (${describeResponse(response, body)})`, {
+                status,
+                blocked: status === 403 || status === 429 || isChallengeBody(body),
+                retryAfterMs: getRetryAfterMs(response),
+            });
+        }
+
+        const payload = extractSearchPayload(body);
+        if (!payload) throw new PayloadError(`Search page had no job payload (${describeResponse(response, body)})`);
+        return payload;
+    },
+});
+
+const fetchJobPageDetail = async ({ jobId, jobUrl }) => runWithRetries({
+    label: `Job page ${jobId}`,
+    attempts: 2,
+    operation: async (client) => {
+        const url = toJobUrl(jobUrl) ?? `${SITE}/jobs/job/${jobId}`;
+        const response = await client.fetch(url, { signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS) });
+        if (response.status === 404 || response.status === 410) {
+            throw new RequestError(`Job page returned HTTP ${response.status}`, {
+                status: response.status,
+                permanent: true,
+            });
+        }
+
+        const body = await safeText(response);
+        if (!response.ok) {
+            throw new RequestError(`Job page returned HTTP ${response.status} (${describeResponse(response, body)})`, {
+                status: response.status,
+                blocked: response.status === 403 || response.status === 429 || isChallengeBody(body),
+                retryAfterMs: getRetryAfterMs(response),
+            });
+        }
+
+        const data = parseNextData(body);
+        const detail = data?.props?.pageProps?.consolidatedJobDetails?.jobDetails;
+        if (!detail) throw new PayloadError(`Job page had no detail payload (${describeResponse(response, body)})`);
+        return detail;
+    },
+});
+
+const fetchJobDetail = async ({ jobId, jobUrl }) => {
+    try {
+        const detail = await runWithRetries({
+            label: `Job ${jobId}`,
+            attempts: MAX_DETAIL_ATTEMPTS,
+            operation: async (client) => {
+                const response = await client.fetch(buildDetailUrl(jobId), {
+                    headers: buildDetailHeaders(jobUrl),
+                    signal: AbortSignal.timeout(DETAIL_TIMEOUT_MS),
+                });
+
+                if (response.status === 404 || response.status === 410) {
+                    throw new RequestError(`Job ${jobId} is no longer available`, {
+                        status: response.status,
+                        permanent: true,
+                    });
+                }
+
+                const body = await safeText(response);
+                if (!response.ok) {
+                    throw new RequestError(`Detail endpoint returned HTTP ${response.status} (${describeResponse(response, body)})`, {
+                        status: response.status,
+                        blocked: response.status === 403 || response.status === 429 || isChallengeBody(body),
+                        retryAfterMs: getRetryAfterMs(response),
+                    });
+                }
+
+                const data = parseJson(body);
+                const jobDetails = data?.result?.jobDetails;
+                if (!jobDetails) {
+                    throw new PayloadError(`Detail endpoint had no jobDetails (${describeResponse(response, body)})`);
+                }
+                return jobDetails;
+            },
         });
+        return { detail, source: 'detail' };
+    } catch (error) {
+        if (error instanceof RequestError && error.permanent) throw error;
+
+        let pageError = null;
+        const pageDetail = await fetchJobPageDetail({ jobId, jobUrl }).catch((failure) => {
+            pageError = failure;
+            return null;
+        });
+        if (pageDetail) return { detail: pageDetail, source: 'job-page' };
+        if (pageError) log.warning(`Job ${jobId}: job page fallback failed: ${formatError(pageError)}`);
+        throw error;
     }
 };
 
@@ -532,168 +857,188 @@ const mapWithConcurrency = async (items, limit, mapper) => {
     return results;
 };
 
-const fetchPagePayload = async ({ targetUrl, client, pageNo, maxRetries = 4 }) => {
-    let lastError = null;
-
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-            const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-            const response = await client.fetch(targetUrl, { signal: timeout });
-            const statusCode = Number(response?.status);
-            if (!response || !Number.isFinite(statusCode) || statusCode < 200 || statusCode >= 300) {
-                throw new PayloadNotFoundError(`Search page returned HTTP ${statusCode || 'unknown'}`, {
-                    blocked: RATE_LIMIT_STATUSES.has(statusCode),
-                    statusCode,
-                    retryAfterMs: getRetryAfterMs(response),
-                });
-            }
-
-            const body = await response.text();
-            const payload = parseStructuredPayload(body);
-            if (!payload) {
-                const blocked = isLikelyBlockPage(body);
-                const message = blocked
-                    ? `Structured payload not found: likely anti-bot page (status ${response.status})`
-                    : `Structured payload not found (status ${response.status})`;
-                throw new PayloadNotFoundError(message, {
-                    blocked,
-                    statusCode: response.status,
-                    bodyLength: body.length,
-                });
-            }
-            return payload;
-        } catch (error) {
-            lastError = error;
-            if (attempt >= maxRetries || !isRetryableError(error)) break;
-
-            const delay = getRetryDelay({ attempt, error });
-            if (attempt === 1 || attempt === maxRetries - 1) {
-                log.warning(`Search page ${pageNo} temporarily unavailable (${error.message}). Retrying ${attempt + 1}/${maxRetries} in ${Math.round(delay / 1000)}s.`);
-            }
-            await sleep(delay);
-        }
+const enrichRecords = async (records) => {
+    if (detailStats.disabled) {
+        detailStats.snippetFallback += records.length;
+        return records;
     }
 
-    throw lastError ?? new Error('Unknown fetch failure');
+    return mapWithConcurrency(records, DETAIL_CONCURRENCY, async (record) => {
+        if (!record.jobId) return record;
+        if (detailStats.disabled) {
+            detailStats.snippetFallback++;
+            return record;
+        }
+
+        try {
+            const { detail, source } = await fetchJobDetail({ jobId: record.jobId, jobUrl: record.url });
+            if (source === 'job-page') detailStats.pageFallback++;
+            else detailStats.success++;
+            detailStats.consecutiveFailures = 0;
+            return mergeDetail(record, detail);
+        } catch (error) {
+            if (error instanceof RequestError && error.permanent) {
+                detailStats.gone++;
+                return record;
+            }
+
+            detailStats.consecutiveFailures++;
+            if (detailStats.consecutiveFailures >= DETAIL_FAILURE_LIMIT && !detailStats.disabled) {
+                detailStats.disabled = true;
+                log.warning('Detail requests paused after repeated failures. Remaining jobs keep their search snippets.');
+            }
+
+            detailStats.snippetFallback++;
+            return record;
+        }
+    });
 };
 
-const hasExplicitStartUrl = Boolean(
-    (typeof startUrl === 'string' && startUrl.trim())
-    || (typeof url === 'string' && url.trim())
-    || (Array.isArray(startUrls) && startUrls.some((item) => (
-        (typeof item === 'string' && item.trim())
-        || (item && typeof item.url === 'string' && item.url.trim())
-    )))
-);
-const defaultStartUrl = buildStartUrl(keyword, location, effectivePostedDate);
-const startUrlList = normalizeInputUrls({
-    userStartUrls: startUrls,
-    userStartUrl: startUrl,
-    userUrl: url,
-    fallbackUrl: defaultStartUrl,
-});
-if (!startUrlList.length) {
-    throw new Error('No usable Reed source URL was provided.');
-}
-
-const queryKeyword = hasExplicitStartUrl ? '' : keyword;
-const queryLocation = hasExplicitStartUrl ? '' : location;
-const queryPostedDate = hasExplicitStartUrl ? '' : effectivePostedDate;
-
-const client = new Impit({
-    browser: 'chrome',
-    ignoreTlsErrors: true,
-});
-
-if (hasExplicitStartUrl) {
-    log.info(`Starting Reed URL scrape with ${startUrlList.length} source URL(s).`);
-} else {
-    log.info(`Starting Reed keyword search for "${keyword || 'all jobs'}"${location ? ` in "${location}"` : ''}.`);
-}
+const dedupKeys = new Set();
+const createDedupKey = (record) => {
+    if (record.jobId) return `jobId:${record.jobId}`;
+    if (record.url) return `url:${record.url}`;
+    if (record.title || record.company || record.location) {
+        return `fallback:${record.title ?? ''}|${record.company ?? ''}|${record.location ?? ''}|${record.datePosted ?? ''}`;
+    }
+    return null;
+};
 
 let totalSaved = 0;
 let duplicateCount = 0;
-const seenKeys = new Set();
+let successfulPages = 0;
+let handledJobSources = 0;
+let failedSources = 0;
+let pagesProcessed = 0;
 
-for (const sourceUrl of startUrlList) {
-    if (totalSaved >= RESULTS_WANTED) break;
+const saveRecords = async (records) => {
+    if (!records.length) return 0;
+    const enriched = await enrichRecords(records);
+    await Actor.pushData(enriched);
+    totalSaved += enriched.length;
+    return enriched.length;
+};
 
-    for (let pageNo = 1; pageNo <= MAX_PAGES; pageNo++) {
-        if (totalSaved >= RESULTS_WANTED) break;
+const processJobSource = async (sourceUrl) => {
+    const jobId = extractJobId(sourceUrl);
+    if (!jobId) return false;
 
-        const pageUrl = buildPagedUrl(sourceUrl, pageNo);
+    handledJobSources++;
+
+    try {
+        const { detail } = await fetchJobDetail({ jobId, jobUrl: sourceUrl });
+        const record = createDetailRecord(detail, searchContext, sourceUrl);
+        const dedupKey = createDedupKey(record);
+        if (dedupKey && dedupKeys.has(dedupKey)) {
+            duplicateCount++;
+            return true;
+        }
+        if (dedupKey) dedupKeys.add(dedupKey);
+        const saved = await saveRecords([record]);
+        if (saved) log.info(`Saved job ${jobId}.`);
+        return true;
+    } catch (error) {
+        if (error instanceof RequestError && error.permanent) {
+            log.warning(`Job ${jobId} is no longer available: ${formatError(error)}`);
+            return true;
+        }
+        log.warning(`Could not load job ${jobId}: ${formatError(error)}`);
+        failedSources++;
+        return true;
+    }
+};
+
+const processSearchSource = async (sourceUrl) => {
+    for (let page = 1; page <= maxPagesInput && totalSaved < resultsWanted; page++) {
+        const pageUrl = prepareSearchUrl(sourceUrl, page);
         let payload;
 
         try {
-            payload = await fetchPagePayload({ targetUrl: pageUrl, client, pageNo });
+            payload = await fetchSearchPage(pageUrl);
+            successfulPages++;
+            pagesProcessed++;
         } catch (error) {
-            if (shouldBackoff(error) && pageNo > 1 && totalSaved > 0) {
-                log.warning(`Stopped this source after repeated rate limits on page ${pageNo}. Saved ${totalSaved} record(s); try lowering requested results or enabling residential proxy for larger runs.`);
-                break;
-            }
-            if (error instanceof PayloadNotFoundError && pageNo > 1 && totalSaved > 0) {
-                log.warning(`Stopped this source at page ${pageNo} after repeated payload errors. Saved ${totalSaved} record(s).`);
-                break;
-            }
-            log.warning(`Stopped one source due to repeated page errors: ${error.message}`);
+            failedSources++;
+            const scope = totalSaved > 0 ? `Stopped this source at page ${page}` : `Source failed at page ${page}`;
+            log.warning(`${scope}: ${formatError(error)}`);
             break;
         }
 
-        const { jobs } = payload;
-        if (!jobs.length) {
-            if (pageNo === 1) log.warning('No records found for one source URL.');
+        if (payload.notFoundReason) {
+            log.info(`Search ended: ${payload.notFoundReason}.`);
+            break;
+        }
+
+        if (!payload.jobs.length) {
+            if (page === 1) log.info('No jobs matched this search.');
             break;
         }
 
         const batch = [];
-        for (const job of jobs) {
-            if (totalSaved >= RESULTS_WANTED) break;
+        for (const job of payload.jobs) {
+            if (totalSaved + batch.length >= resultsWanted) break;
 
-            const record = createRecord({
+            const record = createBaseRecord({
                 job,
-                pageNo,
-                totalFound: payload.count,
-                keywordInput: queryKeyword,
-                locationInput: queryLocation,
-                postedDateInput: queryPostedDate,
+                page,
+                total: payload.count,
+                context: searchContext,
             });
-
             const dedupKey = createDedupKey(record);
-            if (dedupKey && seenKeys.has(dedupKey)) {
+            if (dedupKey && dedupKeys.has(dedupKey)) {
                 duplicateCount++;
                 continue;
             }
-
-            if (dedupKey) seenKeys.add(dedupKey);
             if (!record.url && !record.title) continue;
-
+            if (dedupKey) dedupKeys.add(dedupKey);
             batch.push(record);
-            totalSaved++;
         }
 
-        if (batch.length) {
-            const enrichedBatch = await mapWithConcurrency(
-                batch,
-                DETAIL_CONCURRENCY,
-                (record) => enrichRecordWithDetail({ record, client }),
-            );
-            await Actor.pushData(enrichedBatch);
+        const saved = await saveRecords(batch);
+        if (saved) {
+            log.info(`Page ${page}: saved ${saved}. Total ${totalSaved}/${resultsWanted}.`);
         }
 
-        log.info(`Page ${pageNo}: saved ${batch.length}; total ${totalSaved}.`);
-
-        if (jobs.length === 0) break;
-        if (payload.count && pageNo * jobs.length >= payload.count) break;
-        await sleep(300 + Math.floor(Math.random() * 450));
+        if (payload.count && page * PAGE_SIZE >= payload.count) break;
+        if (page < maxPagesInput && totalSaved < resultsWanted) await sleep(randomInt(250, 600));
     }
+};
+
+if (proxyRequested) log.info('Proxy configuration enabled.');
+
+if (hasExplicitSource) {
+    log.info(`Starting Reed URL scrape with ${sourceUrls.length} source URL(s).`);
+    for (const sourceUrl of sourceUrls) {
+        if (totalSaved >= resultsWanted) break;
+        const handledAsJob = await processJobSource(sourceUrl);
+        if (!handledAsJob) await processSearchSource(sourceUrl);
+    }
+} else {
+    log.info(`Starting Reed keyword search for "${searchKeyword || 'all jobs'}"${explicitLocation ? ` in "${explicitLocation}"` : ''}.`);
+    const generatedUrl = buildSearchUrl({
+        keyword: searchKeyword,
+        location: explicitLocation,
+        postedDate,
+        page: 1,
+    });
+    await processSearchSource(generatedUrl);
 }
 
-if (duplicateCount > 0) {
-    log.info(`Skipped ${duplicateCount} duplicate record(s).`);
-}
-if (detailStats.success || detailStats.fallback) {
-    log.info(`Description enrichment: ${detailStats.success} full, ${detailStats.fallback} fallback${detailStats.disabled ? ' (paused after rate limits)' : ''}.`);
+if (successfulPages === 0 && handledJobSources === 0 && totalSaved === 0) {
+    throw new Error(
+        `Reed did not return a readable search page after ${failedSources} failed source(s). `
+        + 'Check API_DISCOVERY.md and the run log before changing the request flow.',
+    );
 }
 
-log.info(`Run finished. Total records saved: ${totalSaved}.`);
+if (duplicateCount > 0) log.info(`Skipped ${duplicateCount} duplicate record(s).`);
+if (detailStats.success || detailStats.pageFallback || detailStats.snippetFallback) {
+    log.info(
+        `Descriptions: ${detailStats.success} full, ${detailStats.pageFallback} from job pages, `
+        + `${detailStats.snippetFallback} from search snippets${detailStats.disabled ? ' (detail requests paused)' : ''}.`,
+    );
+}
+if (detailStats.gone > 0) log.info(`Skipped ${detailStats.gone} expired job detail(s).`);
+
+log.info(`Run finished. Saved ${totalSaved} record(s) from ${pagesProcessed} page(s).`);
 await Actor.exit();

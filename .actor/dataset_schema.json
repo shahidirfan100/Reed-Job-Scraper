@@ -10,18 +10,24 @@
           "title",
           "company",
           "location",
+          "postcode",
+          "region",
           "employmentType",
           "salary",
           "salaryMin",
           "salaryMax",
+          "salaryPeriod",
           "currency",
           "datePosted",
           "validThrough",
+          "isRemote",
           "isEasyApply",
           "isFeatured",
           "remoteWorkingOption",
+          "sector",
           "taxonomyLevel1",
           "taxonomyLevel2",
+          "skills",
           "url"
         ]
       },
@@ -44,6 +50,14 @@
             "label": "Location",
             "format": "text"
           },
+          "postcode": {
+            "label": "Postcode",
+            "format": "text"
+          },
+          "region": {
+            "label": "Region",
+            "format": "text"
+          },
           "employmentType": {
             "label": "Job Type",
             "format": "text"
@@ -59,6 +73,10 @@
           "salaryMax": {
             "label": "Salary Max",
             "format": "number"
+          },
+          "salaryPeriod": {
+            "label": "Pay Period",
+            "format": "text"
           },
           "currency": {
             "label": "Currency",
@@ -76,13 +94,25 @@
             "label": "Easy Apply",
             "format": "boolean"
           },
+          "isRemote": {
+            "label": "Remote",
+            "format": "boolean"
+          },
           "isFeatured": {
             "label": "Featured",
             "format": "boolean"
           },
           "remoteWorkingOption": {
-            "label": "Remote",
+            "label": "Working pattern",
             "format": "text"
+          },
+          "sector": {
+            "label": "Sector",
+            "format": "text"
+          },
+          "skills": {
+            "label": "Skills",
+            "format": "array"
           },
           "taxonomyLevel1": {
             "label": "Category",
